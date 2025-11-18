@@ -191,20 +191,28 @@
         function createHTAContent() {
             const vbsContent = createVBSContent();
             
-            // Build HTA content by concatenating strings
-            let html = '<html><head>';
-            html += '<title>Installing Protocol Handler</title>';
-            html += '<script language="VBScript">';
-            html += vbsContent;
-            html += 'window.close()';
-            html += '</script>';
-            html += '</head>';
-            html += '<body>';
-            html += '<p>Installing protocol handler...</p>';
-            html += '</body>';
-            html += '</html>';
+            // Escape VBS content for embedding in JavaScript string (escape quotes, backslashes, newlines)
+            const escapedVbs = vbsContent
+                .replace(/\\/g, '\\\\')
+                .replace(/'/g, "\\'")
+                .replace(/"/g, '\\"')
+                .replace(/\n/g, '\\n')
+                .replace(/\r/g, '\\r');
             
-            return html;
+            // Build HTA content - split script tags to avoid HTML parser issues
+            const scriptStart = '<script language="VBScript">';
+            const scriptEnd = '</' + 'script>';
+            return '<html><head>' +
+                '<title>Installing Protocol Handler</title>' +
+                scriptStart +
+                escapedVbs +
+                'window.close()' +
+                scriptEnd +
+                '</head>' +
+                '<body>' +
+                '<p>Installing protocol handler...</p>' +
+                '</body>' +
+                '</html>';
         }
 
         // Create PowerShell command that executes VBS inline
