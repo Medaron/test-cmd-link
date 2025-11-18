@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Command Trigger</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2rem;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 0.95rem;
+        }
+
+        .ping-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 18px 40px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+            margin: 10px;
+        }
+
+        .ping-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        .ping-button:active {
+            transform: translateY(0);
+        }
+
+        .ping-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            margin-top: 25px;
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 0.9rem;
+            min-height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .server-status {
+            margin-top: 20px;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            background: #f8f9fa;
+            color: #495057;
+        }
+
+        .server-status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .server-status.disconnected {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .os-info {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            background: #e7f3ff;
+            color: #004085;
+        }
+
+        .instructions {
+            margin-top: 25px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            text-align: left;
+            font-size: 0.85rem;
+            color: #495057;
+        }
+
+        .instructions h3 {
+            margin-bottom: 10px;
+            color: #333;
+            font-size: 1rem;
+        }
+
+        .instructions ol {
+            margin-left: 20px;
+        }
+
+        .instructions li {
+            margin-bottom: 8px;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid #ffffff;
+            border-radius: 50%;
+            border-top-color: transparent;
+            animation: spin 0.6s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Command Trigger</h1>
+        <p class="subtitle">Click the button to run OS-specific command</p>
+        
+        <button id="pingButton" class="ping-button" onclick="triggerCommand()">
+            Run Command
+        </button>
+
+        <div id="serverStatus" class="server-status disconnected">
+            ⚠️ Checking server connection...
+        </div>
+
+        <div id="osInfo" class="os-info" style="display: none;">
+            📱 Detected OS: <span id="osType">Unknown</span>
+        </div>
+
+        <div id="status" class="status info" style="display: none;"></div>
+
+        <div class="instructions">
+            <h3>📋 Setup Instructions:</h3>
+            <ol>
+                <li>Install Node.js on your computer</li>
+                <li>Run: <code>npm install</code></li>
+                <li>Run: <code>npm start</code> to start local server</li>
+                <li>Keep the server running and refresh this page</li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3001';
+        let serverConnected = false;
+        let detectedOS = 'Unknown';
+
+        // Check server connection on load
+        async function checkServerConnection() {
+            try {
+                const response = await fetch(`${API_URL}/api/health`, {
+                    method: 'GET',
+                    timeout: 2000
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    serverConnected = true;
+                    detectedOS = data.platform || 'Unknown';
+                    updateServerStatus(true);
+                    updateOSInfo(detectedOS);
+                    return true;
+                } else {
+                    serverConnected = false;
+                    updateServerStatus(false);
+                    return false;
+                }
+            } catch (error) {
+                serverConnected = false;
+                updateServerStatus(false);
+                return false;
+            }
+        }
+
+        function updateServerStatus(connected) {
+            const statusEl = document.getElementById('serverStatus');
+            if (connected) {
+                statusEl.className = 'server-status connected';
+                statusEl.textContent = '✅ Local server connected';
+            } else {
+                statusEl.className = 'server-status disconnected';
+                statusEl.textContent = '⚠️ Local server not running. Please start the server with: npm start';
+            }
+        }
+
+        function updateOSInfo(platform) {
+            const osInfoEl = document.getElementById('osInfo');
+            const osTypeEl = document.getElementById('osType');
+            
+            const osNames = {
+                'win32': 'Windows',
+                'darwin': 'macOS',
+                'linux': 'Linux'
+            };
+            
+            osTypeEl.textContent = osNames[platform] || platform;
+            osInfoEl.style.display = 'block';
+        }
+
+        async function triggerCommand() {
+            const button = document.getElementById('pingButton');
+            const statusEl = document.getElementById('status');
+
+            // Disable button
+            button.disabled = true;
+            button.innerHTML = '<span class="loading"></span>Starting...';
+
+            // Show status
+            statusEl.style.display = 'flex';
+            statusEl.className = 'status info';
+            statusEl.textContent = 'Connecting to local server...';
+
+            try {
+                const response = await fetch(`${API_URL}/api/ping`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    statusEl.className = 'status success';
+                    const osNames = {
+                        'win32': 'Windows',
+                        'darwin': 'macOS',
+                        'linux': 'Linux'
+                    };
+                    const osName = osNames[data.platform] || data.platform;
+                    statusEl.textContent = `✅ Command started successfully for ${osName}! (Process ID: ${data.processId})`;
+                } else {
+                    statusEl.className = 'status error';
+                    statusEl.textContent = `❌ Error: ${data.message || 'Failed to start command'}`;
+                }
+            } catch (error) {
+                statusEl.className = 'status error';
+                statusEl.textContent = `❌ Cannot connect to local server. Make sure the server is running on port 3001. Error: ${error.message}`;
+            } finally {
+                // Re-enable button
+                button.disabled = false;
+                button.innerHTML = 'Run Command';
+            }
+        }
+
+        // Check connection on page load
+        window.addEventListener('load', () => {
+            checkServerConnection();
+            // Check every 5 seconds
+            setInterval(checkServerConnection, 5000);
+        });
+    </script>
+</body>
+</html>
+
