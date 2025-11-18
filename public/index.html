@@ -200,17 +200,106 @@
     </div>
 
     <script>
-        const API_URL = 'http://localhost:3001';
+        let API_URL = 'http://localhost:3001';
         let serverConnected = false;
         let detectedOS = 'Unknown';
+
+        // Function to detect server port by trying common ports
+        // Checks ports from 3001 to 3100 to match server's maxAttempts (100)
+        async function detectServerPort() {
+            // First, check if we're already on localhost - use that port first
+            const currentPort = window.location.port;
+            if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+                if (currentPort) {
+                    try {
+                        const testUrl = `http://localhost:${currentPort}/api/health`;
+                        const timeoutPromise = new Promise((_, reject) => 
+                            setTimeout(() => reject(new Error('Timeout')), 300)
+                        );
+                        const fetchPromise = fetch(testUrl, { method: 'GET' });
+                        const response = await Promise.race([fetchPromise, timeoutPromise]);
+                        
+                        if (response && response.ok) {
+                            const data = await response.json();
+                            if (data.status === 'ok' && data.platform) {
+                                API_URL = `http://localhost:${currentPort}`;
+                                console.log(`✅ Server detected on current port ${currentPort}`);
+                                return parseInt(currentPort);
+                            }
+                        }
+                    } catch (error) {
+                        // Continue to search other ports
+                        console.log('Current port not available, searching...');
+                    }
+                }
+            }
+            
+            const startPort = 3001;
+            const maxPorts = 100; // Match server's maxAttempts
+            const ports = [];
+            
+            // Generate port list
+            for (let i = 0; i < maxPorts; i++) {
+                ports.push(startPort + i);
+            }
+            
+            // Try ports in parallel batches for faster detection
+            const batchSize = 10;
+            for (let i = 0; i < ports.length; i += batchSize) {
+                const batch = ports.slice(i, i + batchSize);
+                const promises = batch.map(async (port) => {
+                    try {
+                        const testUrl = `http://localhost:${port}/api/health`;
+                        // Use Promise.race to implement timeout
+                        const timeoutPromise = new Promise((_, reject) => 
+                            setTimeout(() => reject(new Error('Timeout')), 300)
+                        );
+                        const fetchPromise = fetch(testUrl, { method: 'GET' });
+                        
+                        const response = await Promise.race([fetchPromise, timeoutPromise]);
+                        
+                        if (response && response.ok) {
+                            const data = await response.json();
+                            // Verify it's our server by checking if it has the expected structure
+                            if (data.status === 'ok' && data.platform) {
+                                API_URL = `http://localhost:${port}`;
+                                console.log(`✅ Server detected on port ${port}`);
+                                return port;
+                            }
+                        }
+                    } catch (error) {
+                        // Try next port
+                        return null;
+                    }
+                    return null;
+                });
+                
+                const results = await Promise.all(promises);
+                const foundPort = results.find(port => port !== null);
+                if (foundPort) {
+                    return foundPort;
+                }
+            }
+            return null;
+        }
 
         // Check server connection on load
         async function checkServerConnection() {
             try {
-                const response = await fetch(`${API_URL}/api/health`, {
-                    method: 'GET',
-                    timeout: 2000
-                });
+                // First, try to detect which port the server is running on
+                const detectedPort = await detectServerPort();
+                if (!detectedPort) {
+                    serverConnected = false;
+                    updateServerStatus(false);
+                    return false;
+                }
+
+                // Use Promise.race to implement timeout
+                const timeoutPromise = new Promise((_, reject) => 
+                    setTimeout(() => reject(new Error('Connection timeout')), 2000)
+                );
+                const fetchPromise = fetch(`${API_URL}/api/health`, { method: 'GET' });
+                const response = await Promise.race([fetchPromise, timeoutPromise]);
                 
                 if (response.ok) {
                     const data = await response.json();
@@ -235,7 +324,7 @@
             const statusEl = document.getElementById('serverStatus');
             if (connected) {
                 statusEl.className = 'server-status connected';
-                statusEl.textContent = '✅ Local server connected';
+                statusEl.textContent = `✅ Local server connected on ${API_URL.replace('http://localhost:', 'port ')}`;
             } else {
                 statusEl.className = 'server-status disconnected';
                 statusEl.textContent = '⚠️ Local server not running. Please start the server with: npm start';
@@ -294,7 +383,7 @@
                 }
             } catch (error) {
                 statusEl.className = 'status error';
-                statusEl.textContent = `❌ Cannot connect to local server. Make sure the server is running on port 3001. Error: ${error.message}`;
+                statusEl.textContent = `❌ Cannot connect to local server. Make sure the server is running. Error: ${error.message}`;
             } finally {
                 // Re-enable button
                 button.disabled = false;
