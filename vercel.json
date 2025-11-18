@@ -15,6 +15,21 @@
       "src": "/",
       "dest": "/public/index.html"
     }
+  ],
+  "headers": [
+    {
+      "source": "/(.*).(vbs|bat|exe)",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/octet-stream"
+        },
+        {
+          "key": "Content-Disposition",
+          "value": "attachment"
+        }
+      ]
+    }
   ]
 }
 
