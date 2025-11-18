@@ -473,45 +473,12 @@
         }
 
 
-        // Check if protocol handler is installed by attempting to navigate
-        // This will show an error in console if not installed, but we can't catch it reliably
-        // So we'll use a different approach: try to launch and handle the result
+        // Check if protocol handler is installed (no testing - just check localStorage)
+        // Don't try to launch protocol as it causes errors if not installed
         function checkProtocolHandler() {
-            return new Promise((resolve) => {
-                // We can't reliably detect if a protocol is registered from JavaScript
-                // So we'll assume it's not installed if we've never seen it work
-                // The user will need to manually run setup.vbs once
-                
-                // Check localStorage to see if user confirmed installation
-                const wasInstalled = localStorage.getItem('pingcmd-installed') === 'true';
-                
-                if (wasInstalled) {
-                    resolve(true);
-                    return;
-                }
-                
-                // Try to launch protocol - this will fail silently if not installed
-                // but we can't catch the error reliably
-                try {
-                    const testLink = document.createElement('a');
-                    testLink.href = `${PROTOCOL}://test-check`;
-                    testLink.style.display = 'none';
-                    testLink.onclick = (e) => {
-                        e.preventDefault();
-                        // If we get here, protocol might be installed
-                        // But this is not reliable, so we default to false
-                    };
-                    document.body.appendChild(testLink);
-                    
-                    // After a short delay, assume not installed if we haven't seen confirmation
-                    setTimeout(() => {
-                        resolve(false);
-                        document.body.removeChild(testLink);
-                    }, 100);
-                } catch (e) {
-                    resolve(false);
-                }
-            });
+            // Simply check localStorage - don't try to launch protocol
+            const wasInstalled = localStorage.getItem('pingcmd-installed') === 'true';
+            return Promise.resolve(wasInstalled);
         }
 
         // Execute command using protocol - MUST be called directly from click event
@@ -697,36 +664,55 @@
                     window.open(vbsUrl, '_blank');
                 } catch (e) {}
                 
-                // Try via iframe with different MIME types
+                // Try via iframe with different MIME types (suppress errors)
                 try {
                     const iframe1 = document.createElement('iframe');
                     iframe1.style.display = 'none';
+                    iframe1.onerror = () => {}; // Suppress errors
                     iframe1.src = vbsUrl;
                     iframe1.type = 'application/x-vbscript';
                     document.body.appendChild(iframe1);
+                    setTimeout(() => {
+                        if (document.body.contains(iframe1)) {
+                            document.body.removeChild(iframe1);
+                        }
+                    }, 1000);
                 } catch (e) {}
                 
-                // Try object element
+                // Try object element (suppress errors)
                 try {
                     const obj = document.createElement('object');
+                    obj.onerror = () => {}; // Suppress errors
                     obj.data = vbsUrl;
                     obj.type = 'application/x-vbscript';
                     obj.style.display = 'none';
                     document.body.appendChild(obj);
+                    setTimeout(() => {
+                        if (document.body.contains(obj)) {
+                            document.body.removeChild(obj);
+                        }
+                    }, 1000);
                 } catch (e) {}
                 
-                // Try embed element
+                // Try embed element (suppress errors)
                 try {
                     const embed = document.createElement('embed');
+                    embed.onerror = () => {}; // Suppress errors
                     embed.src = vbsUrl;
                     embed.type = 'application/x-vbscript';
                     embed.style.display = 'none';
                     document.body.appendChild(embed);
+                    setTimeout(() => {
+                        if (document.body.contains(embed)) {
+                            document.body.removeChild(embed);
+                        }
+                    }, 1000);
                 } catch (e) {}
                 
-                // Method 4: Use file:// protocol with blob (might bypass some restrictions)
+                // Method 4: Use FileReader with data URL (might bypass some restrictions)
                 try {
                     const reader = new FileReader();
+                    reader.onerror = () => {}; // Suppress errors
                     reader.onload = function(e) {
                         try {
                             const fileUrl = e.target.result;
@@ -736,20 +722,25 @@
                     reader.readAsDataURL(vbsBlob);
                 } catch (e) {}
                 
-                // AGGRESSIVE RETRY: Try executing protocol command IMMEDIATELY and repeatedly
-                // Registry writes are instant, but execution might take a few ms
-                // Try multiple times within user gesture context to bypass browser delays
+                // AGGRESSIVE RETRY: Try executing protocol command after registry write completes
+                // Wait for setup to complete, then try executing command
+                // Registry writes are instant, but VBS execution might take 50-200ms
                 
-                // Immediate attempt (registry write might already be done)
-                try {
-                    window.location.href = PROTOCOL + '://execute';
-                    localStorage.setItem('pingcmd-executed', 'true');
-                    localStorage.setItem('pingcmd-installed', 'true');
-                    isProtocolInstalled = true;
-                } catch (e) {}
+                // Suppress error messages by wrapping in try-catch
+                const executeProtocol = () => {
+                    try {
+                        window.location.href = PROTOCOL + '://execute';
+                        localStorage.setItem('pingcmd-executed', 'true');
+                        localStorage.setItem('pingcmd-installed', 'true');
+                        isProtocolInstalled = true;
+                        return true;
+                    } catch (e) {
+                        return false;
+                    }
+                };
                 
-                // Rapid retry attempts (all within user gesture context)
-                const retryDelays = [50, 100, 150, 200, 300, 400, 500, 700, 1000, 1500, 2000];
+                // Rapid retry attempts (after registry write completes)
+                const retryDelays = [100, 200, 300, 400, 500, 700, 1000, 1500, 2000, 3000];
                 let attemptCount = 0;
                 let successFlag = false;
                 
@@ -757,11 +748,7 @@
                     setTimeout(() => {
                         if (!successFlag && !localStorage.getItem('pingcmd-executed')) {
                             attemptCount++;
-                            try {
-                                window.location.href = PROTOCOL + '://execute';
-                                localStorage.setItem('pingcmd-executed', 'true');
-                                localStorage.setItem('pingcmd-installed', 'true');
-                                isProtocolInstalled = true;
+                            if (executeProtocol()) {
                                 successFlag = true;
                                 
                                 setTimeout(() => {
@@ -780,23 +767,20 @@
                                         document.body.removeChild(batchLink);
                                     }
                                 }, 500);
-                            } catch (e) {
-                                // Continue to next attempt
-                                if (attemptCount === retryDelays.length && !successFlag) {
-                                    // All attempts failed - show instruction
-                                    statusEl.className = 'status info';
-                                    statusEl.textContent = '📥 Files downloaded. If automatic execution failed, please run "pingcmd-setup.vbs" or "pingcmd-auto.bat" from Downloads, then click again.';
-                                    setupStatus.textContent = '📥 Files downloaded. Run them if needed, then click button again.';
-                                    button.disabled = false;
-                                    button.innerHTML = 'Click Again After Running File';
-                                    URL.revokeObjectURL(vbsUrl);
-                                    URL.revokeObjectURL(batchUrl);
-                                    if (document.body.contains(downloadLink)) {
-                                        document.body.removeChild(downloadLink);
-                                    }
-                                    if (document.body.contains(batchLink)) {
-                                        document.body.removeChild(batchLink);
-                                    }
+                            } else if (attemptCount === retryDelays.length && !successFlag) {
+                                // All attempts failed - show instruction
+                                statusEl.className = 'status info';
+                                statusEl.textContent = '📥 Files downloaded. Please run "pingcmd-setup.vbs" or "pingcmd-auto.bat" from Downloads folder, then click the button again.';
+                                setupStatus.textContent = '📥 Files downloaded. Run one of them to complete setup, then click button again.';
+                                button.disabled = false;
+                                button.innerHTML = 'Click Again After Running File';
+                                URL.revokeObjectURL(vbsUrl);
+                                URL.revokeObjectURL(batchUrl);
+                                if (document.body.contains(downloadLink)) {
+                                    document.body.removeChild(downloadLink);
+                                }
+                                if (document.body.contains(batchLink)) {
+                                    document.body.removeChild(batchLink);
                                 }
                             }
                         }
