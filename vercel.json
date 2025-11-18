@@ -1,17 +1,4 @@
 {
-  "buildCommand": "",
-  "outputDirectory": "public",
-  "framework": null,
-  "routes": [
-    {
-      "src": "/setup.vbs",
-      "dest": "/public/setup.vbs"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/public/$1"
-    }
-  ],
   "headers": [
     {
       "source": "/setup.vbs",
