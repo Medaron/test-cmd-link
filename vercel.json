@@ -1,12 +1,10 @@
 {
+  "cleanUrls": true,
+  "trailingSlash": false,
   "rewrites": [
     {
-      "source": "/setup.vbs",
-      "destination": "/public/setup.vbs"
-    },
-    {
       "source": "/",
-      "destination": "/public/index.html"
+      "destination": "/index.html"
     }
   ],
   "headers": [
