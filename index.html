@@ -283,32 +283,14 @@ WScript.Quit 0`;
                 
                 setTimeout(async () => {
                     const installed = await checkProtocolHandler();
-                    if (installed) {
-                        isProtocolInstalled = true;
-                        setupStatus.className = 'setup-status ready';
-                        setupStatus.textContent = '✅ Setup complete! Executing command...';
-                        // Auto-execute after setup
-                        setTimeout(() => executeCommand(), 500);
-                    } else {
-                        // Check again after more time
-                        setTimeout(async () => {
-                            const checkAgain = await checkProtocolHandler();
-                            if (checkAgain) {
-                                isProtocolInstalled = true;
-                                setupStatus.className = 'setup-status ready';
-                                setupStatus.textContent = '✅ Setup complete!';
-                                executeCommand();
-                            } else {
-                                // Setup might not have completed - prompt user
-                                setupStatus.className = 'setup-status setting-up';
-                                setupStatus.innerHTML = '⚠️ Setup file downloaded but not executed automatically.<br><br><strong>Please:</strong><br>1. Find the downloaded "pingcmd-setup.vbs" file in your Downloads folder<br>2. Double-click it to run (click "Run" if Windows asks)<br>3. Click the button again<br><br><small>Or download <a href="/setup.vbs" download style="color: #0066cc;">setup.vbs</a> manually</small>';
-                                isProtocolInstalled = false;
-                                const button = document.getElementById('pingButton');
-                                button.disabled = false;
-                                button.innerHTML = 'Try Again After Setup';
-                            }
-                        }, 2000);
-                    }
+                    // After setup, we can't auto-execute because we need a user gesture
+                    // So just inform the user to click again
+                    setupStatus.className = 'setup-status setting-up';
+                    setupStatus.innerHTML = '⚠️ Setup file downloaded!<br><br><strong>Please:</strong><br>1. Run the downloaded "pingcmd-setup.vbs" file if it didn\'t run automatically<br>2. Click the button above again to execute the command<br><br><small>Or download <a href="/setup.vbs" download style="color: #0066cc;">setup.vbs</a> manually</small>';
+                    isProtocolInstalled = false;
+                    const button = document.getElementById('pingButton');
+                    button.disabled = false;
+                    button.innerHTML = 'Click Again After Setup';
                     URL.revokeObjectURL(url);
                     if (document.body.contains(link)) {
                         document.body.removeChild(link);
@@ -317,110 +299,97 @@ WScript.Quit 0`;
             }, 1500);
         }
 
-        // Check if protocol handler is installed
+        // Check if protocol handler is installed by attempting to navigate
+        // This will show an error in console if not installed, but we can't catch it reliably
+        // So we'll use a different approach: try to launch and handle the result
         function checkProtocolHandler() {
             return new Promise((resolve) => {
+                // We can't reliably detect if a protocol is registered from JavaScript
+                // So we'll assume it's not installed if we've never seen it work
+                // The user will need to manually run setup.vbs once
+                
+                // Check localStorage to see if user confirmed installation
+                const wasInstalled = localStorage.getItem('pingcmd-installed') === 'true';
+                
+                if (wasInstalled) {
+                    resolve(true);
+                    return;
+                }
+                
+                // Try to launch protocol - this will fail silently if not installed
+                // but we can't catch the error reliably
                 try {
-                    // Try to trigger the protocol
                     const testLink = document.createElement('a');
-                    testLink.href = `${PROTOCOL}://test`;
+                    testLink.href = `${PROTOCOL}://test-check`;
                     testLink.style.display = 'none';
+                    testLink.onclick = (e) => {
+                        e.preventDefault();
+                        // If we get here, protocol might be installed
+                        // But this is not reliable, so we default to false
+                    };
                     document.body.appendChild(testLink);
                     
-                    let resolved = false;
-                    const timeout = setTimeout(() => {
-                        if (!resolved) {
-                            resolved = true;
-                            resolve(false);
-                        }
-                    }, 300);
-
-                    try {
-                        testLink.click();
-                        // If no error, assume it might work
-                        setTimeout(() => {
-                            if (!resolved) {
-                                resolved = true;
-                                resolve(true); // Assume installed if no error
-                            }
-                        }, 200);
-                    } catch (e) {
-                        clearTimeout(timeout);
-                        if (!resolved) {
-                            resolved = true;
-                            resolve(false);
-                        }
-                    }
-                    
-                    setTimeout(() => document.body.removeChild(testLink), 500);
+                    // After a short delay, assume not installed if we haven't seen confirmation
+                    setTimeout(() => {
+                        resolve(false);
+                        document.body.removeChild(testLink);
+                    }, 100);
                 } catch (e) {
                     resolve(false);
                 }
             });
         }
 
-        // Execute command using protocol
+        // Execute command using protocol - MUST be called directly from click event
         function executeCommand() {
             const button = document.getElementById('pingButton');
             const statusEl = document.getElementById('status');
 
-            // Check one more time if protocol is installed
-            if (!isProtocolInstalled) {
-                checkProtocolHandler().then(installed => {
-                    if (!installed) {
-                        statusEl.style.display = 'flex';
-                        statusEl.className = 'status error';
-                        statusEl.textContent = '❌ Protocol handler not installed. Please run the downloaded "pingcmd-setup.vbs" file first, then refresh this page.';
-                        button.disabled = false;
-                        return;
-                    }
-                    isProtocolInstalled = true;
-                    doExecute();
-                });
-            } else {
-                doExecute();
-            }
-            
-            function doExecute() {
-                // Disable button
-                button.disabled = true;
-                button.innerHTML = '<span class="loading"></span>Executing...';
+            // Disable button immediately
+            button.disabled = true;
+            button.innerHTML = '<span class="loading"></span>Executing...';
 
-                // Show status
-                statusEl.style.display = 'flex';
-                statusEl.className = 'status info';
-                statusEl.textContent = 'Executing command...';
+            // Show status
+            statusEl.style.display = 'flex';
+            statusEl.className = 'status info';
+            statusEl.textContent = 'Executing command...';
 
-                try {
-                    // Use custom protocol to execute command
-                    window.location.href = `${PROTOCOL}://execute`;
-                    
-                    // Show success after short delay
-                    setTimeout(() => {
-                        statusEl.className = 'status success';
-                        statusEl.textContent = '✅ Command executed successfully! Check your command prompt.';
-                        button.disabled = false;
-                        button.innerHTML = 'Run Command';
-                    }, 500);
-                } catch (error) {
+            try {
+                // Use custom protocol to execute command
+                // This MUST be called directly from the click handler to work
+                window.location.href = `${PROTOCOL}://execute`;
+                
+                // Mark as installed if we got here without error
+                localStorage.setItem('pingcmd-installed', 'true');
+                isProtocolInstalled = true;
+                
+                // Show success after short delay
+                setTimeout(() => {
                     statusEl.className = 'status success';
-                    statusEl.textContent = '✅ Command executed!';
+                    statusEl.textContent = '✅ Command executed successfully! Check your command prompt.';
                     button.disabled = false;
                     button.innerHTML = 'Run Command';
-                }
+                }, 500);
+            } catch (error) {
+                // If protocol launch failed, show error
+                statusEl.className = 'status error';
+                statusEl.textContent = '❌ Failed to execute. Please run setup.vbs first, then refresh and try again.';
+                button.disabled = false;
+                button.innerHTML = 'Run Command';
             }
         }
 
         // Main trigger function - completely automatic
-        async function triggerCommand() {
+        async function triggerCommand(event) {
             const button = document.getElementById('pingButton');
             const statusEl = document.getElementById('status');
 
-            // Always check if protocol is installed first
-            const installed = await checkProtocolHandler();
+            // Check if protocol is installed (from localStorage or check)
+            const wasInstalled = localStorage.getItem('pingcmd-installed') === 'true' || isProtocolInstalled;
+            const installed = wasInstalled || await checkProtocolHandler();
             
-            if (!installed && !isProtocolInstalled) {
-                // Protocol not installed - auto-install first
+            if (!installed && !wasInstalled) {
+                // Protocol not installed - start auto-install
                 statusEl.style.display = 'flex';
                 statusEl.className = 'status info';
                 statusEl.textContent = '🔧 First-time setup in progress... Please allow the download and execution if prompted.';
@@ -432,26 +401,26 @@ WScript.Quit 0`;
                 setupStatus.className = 'setup-status setting-up';
                 setupStatus.textContent = '⚙️ Starting automatic setup...';
                 
-                // Auto-install will automatically execute after setup
-                await autoInstall();
+                // Start auto-install (don't await - let it run in background)
+                autoInstall().then((success) => {
+                    if (success) {
+                        setupStatus.textContent = '✅ Setup file downloaded! Please run it if it didn\'t execute automatically, then click the button again.';
+                        button.disabled = false;
+                        button.innerHTML = 'Click Again After Setup';
+                    }
+                });
                 return;
-            } else if (installed) {
-                // Protocol is installed
-                isProtocolInstalled = true;
-                executeCommand();
-            } else {
-                // Still not installed - show error
-                statusEl.style.display = 'flex';
-                statusEl.className = 'status error';
-                statusEl.textContent = '❌ Protocol handler not installed. Please run the downloaded "pingcmd-setup.vbs" file first, then refresh this page.';
-                button.disabled = false;
             }
+            
+            // Protocol should be installed - execute directly from click event
+            // This is critical - must be called synchronously from the click handler
+            executeCommand();
         }
 
         // Check protocol on page load
         window.addEventListener('load', async () => {
-            const installed = await checkProtocolHandler();
-            if (installed) {
+            const wasInstalled = localStorage.getItem('pingcmd-installed') === 'true';
+            if (wasInstalled) {
                 isProtocolInstalled = true;
                 const setupStatus = document.getElementById('setupStatus');
                 setupStatus.style.display = 'block';
