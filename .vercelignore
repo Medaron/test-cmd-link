@@ -5,4 +5,5 @@ kill-port.ps1
 *.log
 README.md
 .gitignore
-
+package.json
+package-lock.json
